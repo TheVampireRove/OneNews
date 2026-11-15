@@ -1,0 +1,8 @@
+{
+  "name": "OneNews",
+  "description": "Adaptive One UI foldable news reader with pure AMOLED dark surfaces, Material 3 Dynamic Color Monet theming, Now Brief summaries, contextual Now Nudge chips, and Flex Mode tabletop posture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

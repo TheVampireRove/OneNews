@@ -1,0 +1,17 @@
+<resources>
+    <string name="app_name">OneNews</string>
+    <string name="nav_feed">Feed</string>
+    <string name="nav_saved">Saved</string>
+    <string name="nav_settings">Settings</string>
+    <string name="header_news">News</string>
+    <string name="header_saved">Saved</string>
+    <string name="header_settings">Settings</string>
+    <string name="search_placeholder">Search headlines, sources, topics…</string>
+    <string name="now_brief_title_morning">Morning Editor\'s Brief</string>
+    <string name="now_brief_title_afternoon">Afternoon Editor\'s Brief</string>
+    <string name="now_brief_title_evening">Evening Editor\'s Brief</string>
+    <string name="play_audio_brief">Play 2-Min Audio Brief</string>
+    <string name="save_all_offline">Save All Offline</string>
+    <string name="add_to_calendar">Add event to Calendar</string>
+    <string name="view_in_maps">View location in Maps</string>
+</resources>

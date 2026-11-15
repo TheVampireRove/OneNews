@@ -1,0 +1,1400 @@
+package com.example.ui.reader
+
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.CalendarContract
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
+import androidx.compose.material.icons.outlined.BookmarkBorder
+import androidx.compose.material.icons.rounded.AutoStories
+import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.FormatSize
+import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextMeasurer
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import androidx.window.layout.FoldingFeature
+import com.example.model.AudioPlaybackState
+import com.example.model.EventMetadata
+import com.example.model.LocationMetadata
+import com.example.model.NewsArticle
+import com.example.model.ThemeSettings
+import com.example.ui.components.ArticleBodyShimmerSkeleton
+import com.example.ui.components.BlurredAmbientBackdrop
+import com.example.ui.components.GlassCircleButton
+import com.example.ui.components.InAppReaderWebViewDialog
+import com.example.ui.components.OneNewsArticleImage
+import com.example.ui.components.OpenOriginalReaderPill
+import com.example.ui.components.glassBorderBrush
+import com.example.ui.components.glassFillColor
+import com.example.ui.components.rememberOneNewsHaptics
+import com.example.ui.theme.AmoledCardElevated
+import com.example.ui.theme.NewsreaderFontFamily
+import com.example.ui.theme.OneUiCardRadius
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+private sealed interface BookPageContent {
+    data class CoverPage(
+        val article: NewsArticle,
+        val heroImageHeightDp: Dp,
+        val openingParagraphs: List<String>,
+        val pageNumber: Int,
+        val totalPages: Int,
+        val isLastPage: Boolean,
+    ) : BookPageContent
+
+    data class BodyPage(
+        val article: NewsArticle,
+        val paragraphs: List<String>,
+        val pageNumber: Int,
+        val totalPages: Int,
+        val isLastPage: Boolean,
+    ) : BookPageContent
+}
+
+@Composable
+fun FullScreenBookReader(
+    article: NewsArticle,
+    windowSizeClass: WindowSizeClass,
+    foldingFeature: FoldingFeature?,
+    isBookmarked: Boolean,
+    themeSettings: ThemeSettings,
+    audioState: AudioPlaybackState,
+    onClose: () -> Unit,
+    onPreviousArticle: () -> Unit,
+    onNextArticle: () -> Unit,
+    onToggleBookmark: (String) -> Unit,
+    onPlayArticleAudio: (NewsArticle) -> Unit,
+    onFontScaleChange: (Float) -> Unit,
+    onShowMessage: (String) -> Unit,
+    isExtractingFullText: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val haptics = rememberOneNewsHaptics()
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
+
+    val isTwoColumnSpread = windowSizeClass.widthSizeClass != WindowWidthSizeClass.Compact ||
+        (foldingFeature?.orientation == FoldingFeature.Orientation.VERTICAL)
+
+    val isFlexTabletop = foldingFeature != null &&
+        foldingFeature.state == FoldingFeature.State.HALF_OPENED &&
+        foldingFeature.orientation == FoldingFeature.Orientation.HORIZONTAL
+
+    var showFontMenu by remember { mutableStateOf(false) }
+    var readerWebViewUrl by remember { mutableStateOf<String?>(null) }
+
+    val coverHeadlineStyle = (if (themeSettings.useSerifHeadlines && !themeSettings.useSystemFont) {
+        MaterialTheme.typography.headlineMedium.copy(fontFamily = NewsreaderFontFamily)
+    } else {
+        MaterialTheme.typography.headlineMedium
+    }).copy(
+        fontSize = (22f * themeSettings.readerFontScale.coerceIn(0.9f, 1.2f)).sp,
+        lineHeight = (28f * themeSettings.readerFontScale.coerceIn(0.9f, 1.2f)).sp,
+    )
+    val coverSubtitleStyle = MaterialTheme.typography.bodyMedium.copy(
+        fontSize = (14f * themeSettings.readerFontScale.coerceIn(0.9f, 1.2f)).sp,
+        lineHeight = (20f * themeSettings.readerFontScale.coerceIn(0.9f, 1.2f)).sp,
+    )
+    val bookBodyStyle = (if (!themeSettings.useSystemFont) {
+        MaterialTheme.typography.bodyLarge.copy(fontFamily = NewsreaderFontFamily)
+    } else {
+        MaterialTheme.typography.bodyLarge
+    }).copy(
+        fontSize = (16f * themeSettings.readerFontScale).sp,
+        lineHeight = (25f * themeSettings.readerFontScale).sp,
+    )
+    val metaLabelStyle = MaterialTheme.typography.labelMedium
+
+    readerWebViewUrl?.let { targetUrl ->
+        InAppReaderWebViewDialog(
+            url = targetUrl,
+            title = article.headline,
+            sourceName = article.source,
+            onDismiss = { readerWebViewUrl = null },
+        )
+    }
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("full_screen_book_reader"),
+    ) {
+        BlurredAmbientBackdrop(
+            imageResId = article.imageResId,
+            imageUrl = article.imageUrl,
+            intensity = 0.30f,
+        )
+
+        val statusInsetPx = WindowInsets.statusBars.getTop(density)
+        val navInsetPx = WindowInsets.navigationBars.getBottom(density)
+        val hingePaddingDp = if (
+            foldingFeature != null &&
+            foldingFeature.orientation == FoldingFeature.Orientation.VERTICAL &&
+            foldingFeature.isSeparating
+        ) {
+            with(density) { (foldingFeature.bounds.width().toDp() + 18.dp).coerceAtLeast(24.dp) }
+        } else {
+            18.dp
+        }
+        val outerHorizPadDp = if (isTwoColumnSpread) 20.dp else 14.dp
+        val spreadContentWidthDp = if (isTwoColumnSpread && !isFlexTabletop) {
+            ((maxWidth - outerHorizPadDp * 2 - hingePaddingDp) / 2f).coerceAtLeast(180.dp)
+        } else {
+            (maxWidth - outerHorizPadDp * 2).coerceAtLeast(180.dp)
+        }
+        val spreadContentHeightDp = with(density) {
+            val totalPx = maxHeight.toPx() - statusInsetPx - navInsetPx
+            (totalPx.toDp() - 132.dp).coerceAtLeast(220.dp)
+        }
+
+        // Compute dynamic TextMeasurer pages sized to exact book card dimensions
+        val pages = remember(
+            article.id,
+            article.paragraphs,
+            article.imageUrl,
+            article.imageResId,
+            article.fullTextExtractionFailed,
+            isExtractingFullText,
+            themeSettings.readerFontScale,
+            themeSettings.useSerifHeadlines,
+            themeSettings.useSystemFont,
+            themeSettings.showNowNudgeChips,
+            isTwoColumnSpread,
+            isFlexTabletop,
+            spreadContentWidthDp,
+            spreadContentHeightDp,
+        ) {
+            paginateArticleForBook(
+                article = article,
+                cardWidthDp = spreadContentWidthDp,
+                cardHeightDp = spreadContentHeightDp,
+                density = density,
+                textMeasurer = textMeasurer,
+                headlineStyle = coverHeadlineStyle,
+                subtitleStyle = coverSubtitleStyle,
+                bodyStyle = bookBodyStyle,
+                metaLabelStyle = metaLabelStyle,
+                isFlexTabletop = isFlexTabletop,
+                includeNudgeFooter = themeSettings.showNowNudgeChips &&
+                    (article.eventMetadata != null || article.locationMetadata != null),
+                includeOriginalReaderPill = !isExtractingFullText &&
+                    article.fullTextExtractionFailed &&
+                    !article.articleUrl.isNullOrBlank(),
+                includeEndOfArticleCard = !isExtractingFullText,
+            )
+        }
+
+        val stepSize = if (isTwoColumnSpread && !isFlexTabletop) 2 else 1
+        var currentPageIndex by remember(article.id) { mutableIntStateOf(0) }
+        val maxPageStart = ((pages.size - 1) / stepSize) * stepSize
+        currentPageIndex = currentPageIndex.coerceIn(0, maxPageStart.coerceAtLeast(0))
+
+        // 3D book page-flipping animation state
+        var outgoingPageIndex by remember(article.id) { mutableIntStateOf(0) }
+        var flipDirection by remember { mutableIntStateOf(1) } // 1 = forward, -1 = backward
+        val flipAnim = remember { Animatable(1f) }
+        var isFlipping by remember { mutableStateOf(false) }
+        var dragAccumulated by remember { mutableFloatStateOf(0f) }
+
+        LaunchedEffect(article.id) {
+            currentPageIndex = 0
+            outgoingPageIndex = 0
+            flipAnim.snapTo(1f)
+            isFlipping = false
+        }
+
+        fun turnPage(direction: Int) {
+            if (isFlipping) return
+            val targetIndex = currentPageIndex + (direction * stepSize)
+            if (targetIndex < 0) {
+                haptics.pageFlip()
+                onPreviousArticle()
+                return
+            }
+            if (targetIndex >= pages.size) {
+                haptics.pageFlip()
+                onNextArticle()
+                return
+            }
+            haptics.pageFlip()
+            outgoingPageIndex = currentPageIndex
+            currentPageIndex = targetIndex
+            flipDirection = direction
+            scope.launch {
+                isFlipping = true
+                flipAnim.snapTo(0f)
+                flipAnim.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 520, easing = FastOutSlowInEasing),
+                )
+                isFlipping = false
+            }
+        }
+
+        val isPlayingThis = !audioState.isNowBriefQueue &&
+            audioState.activeArticleId == article.id &&
+            audioState.isPlaying
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = if (isTwoColumnSpread) 20.dp else 14.dp, vertical = 10.dp),
+        ) {
+            // Minimalist Book Top Header Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    GlassCircleButton(
+                        icon = Icons.Rounded.Close,
+                        contentDescription = "Exit full-screen book view",
+                        onClick = onClose,
+                        size = 44.dp,
+                        testTag = "book_close_button",
+                    )
+                    Column {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoStories,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(15.dp),
+                            )
+                            Text(
+                                text = article.source,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        val pageLabel = if (isTwoColumnSpread && !isFlexTabletop && currentPageIndex + 1 < pages.size) {
+                            "Pages ${currentPageIndex + 1}–${currentPageIndex + 2} of ${pages.size}"
+                        } else {
+                            "Page ${currentPageIndex + 1} of ${pages.size}"
+                        }
+                        Text(
+                            text = pageLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.testTag("book_page_indicator"),
+                        )
+                    }
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box {
+                        GlassCircleButton(
+                            icon = Icons.Rounded.FormatSize,
+                            contentDescription = "Book text size",
+                            onClick = { showFontMenu = true },
+                            active = showFontMenu,
+                            size = 44.dp,
+                        )
+                        DropdownMenu(
+                            expanded = showFontMenu,
+                            onDismissRequest = { showFontMenu = false },
+                            shape = RoundedCornerShape(22.dp),
+                            containerColor = glassFillColor(
+                                alpha = 0.88f,
+                                baseColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            ),
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .width(220.dp)
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text("Page Font Size", style = MaterialTheme.typography.labelLarge)
+                                    Text(
+                                        "${(themeSettings.readerFontScale * 100).roundToInt()}%",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                                Slider(
+                                    value = themeSettings.readerFontScale,
+                                    onValueChange = {
+                                        haptics.scrubTick()
+                                        onFontScaleChange(it)
+                                    },
+                                    valueRange = 0.85f..1.35f,
+                                )
+                            }
+                        }
+                    }
+
+                    if (article.hasAudioBrief) {
+                        GlassCircleButton(
+                            icon = if (isPlayingThis) Icons.Rounded.Pause else Icons.Rounded.GraphicEq,
+                            contentDescription = "Audio brief",
+                            onClick = { onPlayArticleAudio(article) },
+                            active = isPlayingThis,
+                            size = 44.dp,
+                        )
+                    }
+
+                    GlassCircleButton(
+                        icon = if (isBookmarked) Icons.Rounded.Bookmark else Icons.Outlined.BookmarkBorder,
+                        contentDescription = "Bookmark",
+                        onClick = { onToggleBookmark(article.id) },
+                        active = isBookmarked,
+                        size = 44.dp,
+                    )
+
+                    GlassCircleButton(
+                        icon = Icons.Rounded.Share,
+                        contentDescription = "Share",
+                        onClick = { shareBookArticle(context, article) },
+                        size = 44.dp,
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .pointerInput(currentPageIndex, pages.size, isTwoColumnSpread) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragAccumulated = 0f },
+                            onHorizontalDrag = { _, dragAmount -> dragAccumulated += dragAmount },
+                            onDragEnd = {
+                                if (dragAccumulated < -70f) {
+                                    turnPage(1)
+                                } else if (dragAccumulated > 70f) {
+                                    turnPage(-1)
+                                }
+                                dragAccumulated = 0f
+                            },
+                        )
+                    },
+            ) {
+                val progress = flipAnim.value
+
+                if (isTwoColumnSpread && !isFlexTabletop) {
+                    // Two-Column Open-Book Spread with Realistic Spine Page Flip
+                    TwoColumnBookSpreadWithFlip(
+                        pages = pages,
+                        currentIndex = currentPageIndex,
+                        outgoingIndex = outgoingPageIndex,
+                        isFlipping = isFlipping,
+                        flipDirection = flipDirection,
+                        flipProgress = progress,
+                        hingeGap = hingePaddingDp,
+                        themeSettings = themeSettings,
+                        headlineStyle = coverHeadlineStyle,
+                        subtitleStyle = coverSubtitleStyle,
+                        bodyStyle = bookBodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = { launchBookCalendarIntent(context, it, onShowMessage) },
+                        onOpenMaps = { launchBookMapsIntent(context, it, onShowMessage) },
+                        onOpenOriginalReaderView = { url -> readerWebViewUrl = url },
+                    )
+                } else {
+                    // Single-Page Book Flip (Cover Screen or Tabletop top half)
+                    SinglePageBookWithFlip(
+                        pages = pages,
+                        currentIndex = currentPageIndex,
+                        outgoingIndex = outgoingPageIndex,
+                        isFlipping = isFlipping,
+                        flipDirection = flipDirection,
+                        flipProgress = progress,
+                        themeSettings = themeSettings,
+                        headlineStyle = coverHeadlineStyle,
+                        subtitleStyle = coverSubtitleStyle,
+                        bodyStyle = bookBodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = { launchBookCalendarIntent(context, it, onShowMessage) },
+                        onOpenMaps = { launchBookMapsIntent(context, it, onShowMessage) },
+                        onOpenOriginalReaderView = { url -> readerWebViewUrl = url },
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Bottom Thumb-Zone Book Page-Turner Deck
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Surface(
+                    onClick = { turnPage(-1) },
+                    shape = CircleShape,
+                    color = glassFillColor(
+                        alpha = 0.64f,
+                        baseColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ),
+                    border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("book_prev_page_button"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, null, Modifier.size(18.dp))
+                        Text(
+                            text = if (currentPageIndex == 0) "Prev Story" else "Prev Page",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+
+                // Visual page dot indicator
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val totalSpreads = ((pages.size + stepSize - 1) / stepSize).coerceAtLeast(1)
+                    val activeSpread = (currentPageIndex / stepSize).coerceIn(0, totalSpreads - 1)
+                    repeat(totalSpreads) { dot ->
+                        val active = dot == activeSpread
+                        Box(
+                            modifier = Modifier
+                                .height(7.dp)
+                                .width(if (active) 22.dp else 7.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (active) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.outlineVariant
+                                    }
+                                ),
+                        )
+                    }
+                }
+
+                Surface(
+                    onClick = { turnPage(1) },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("book_next_page_button"),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val isAtEnd = currentPageIndex + stepSize >= pages.size
+                        Text(
+                            text = if (isAtEnd) "Next Story" else "Flip Page",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TwoColumnBookSpreadWithFlip(
+    pages: List<BookPageContent>,
+    currentIndex: Int,
+    outgoingIndex: Int,
+    isFlipping: Boolean,
+    flipDirection: Int,
+    flipProgress: Float,
+    hingeGap: Dp,
+    themeSettings: ThemeSettings,
+    headlineStyle: TextStyle,
+    subtitleStyle: TextStyle,
+    bodyStyle: TextStyle,
+    isExtractingFullText: Boolean,
+    onAddCalendarEvent: (EventMetadata) -> Unit,
+    onOpenMaps: (LocationMetadata) -> Unit,
+    onOpenOriginalReaderView: (String) -> Unit,
+) {
+    val density = LocalDensity.current.density
+
+    val leftPage = pages.getOrNull(currentIndex)
+    val rightPage = pages.getOrNull(currentIndex + 1)
+
+    val outLeft = pages.getOrNull(outgoingIndex)
+    val outRight = pages.getOrNull(outgoingIndex + 1)
+
+    Row(
+        modifier = Modifier.fillMaxSize(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // LEFT COLUMN PAGE
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clipToBounds(),
+        ) {
+            if (isFlipping && flipDirection > 0 && flipProgress < 0.5f) {
+                // While right page is lifting (0..0.5), left stays on old left page
+                outLeft?.let {
+                    BookPageCard(
+                        page = it,
+                        isLeftSide = true,
+                        themeSettings = themeSettings,
+                        headlineStyle = headlineStyle,
+                        subtitleStyle = subtitleStyle,
+                        bodyStyle = bodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = onAddCalendarEvent,
+                        onOpenMaps = onOpenMaps,
+                        onOpenOriginalReaderView = onOpenOriginalReaderView,
+                    )
+                }
+            } else {
+                leftPage?.let {
+                    BookPageCard(
+                        page = it,
+                        isLeftSide = true,
+                        themeSettings = themeSettings,
+                        headlineStyle = headlineStyle,
+                        subtitleStyle = subtitleStyle,
+                        bodyStyle = bodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = onAddCalendarEvent,
+                        onOpenMaps = onOpenMaps,
+                        onOpenOriginalReaderView = onOpenOriginalReaderView,
+                    )
+                }
+            }
+
+            // Backward flip: outgoing left page rotates 0 -> +180 around right spine;
+            // Forward flip (second half 0.5..1.0): incoming new left page lands from -90 -> 0
+            if (isFlipping && flipDirection > 0 && flipProgress >= 0.5f && leftPage != null) {
+                val angle = (1f - flipProgress) * 180f // 90 -> 0
+                val shadowAlpha = ((1f - flipProgress) * 0.55f).coerceIn(0f, 0.45f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(2f)
+                        .graphicsLayer {
+                            cameraDistance = 18f * density
+                            transformOrigin = TransformOrigin(1f, 0.5f)
+                            rotationY = angle
+                        }
+                        .drawWithContent {
+                            drawContent()
+                            drawRect(
+                                Brush.horizontalGradient(
+                                    listOf(Color.Black.copy(alpha = shadowAlpha), Color.Transparent)
+                                )
+                            )
+                        },
+                ) {
+                    BookPageCard(
+                        page = leftPage,
+                        isLeftSide = true,
+                        themeSettings = themeSettings,
+                        headlineStyle = headlineStyle,
+                        subtitleStyle = subtitleStyle,
+                        bodyStyle = bodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = onAddCalendarEvent,
+                        onOpenMaps = onOpenMaps,
+                        onOpenOriginalReaderView = onOpenOriginalReaderView,
+                    )
+                }
+            } else if (isFlipping && flipDirection < 0 && flipProgress < 0.5f && outLeft != null) {
+                val angle = flipProgress * 180f // 0 -> 90
+                val shadowAlpha = (flipProgress * 0.6f).coerceIn(0f, 0.45f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(2f)
+                        .graphicsLayer {
+                            cameraDistance = 18f * density
+                            transformOrigin = TransformOrigin(1f, 0.5f)
+                            rotationY = angle
+                        }
+                        .drawWithContent {
+                            drawContent()
+                            drawRect(
+                                Brush.horizontalGradient(
+                                    listOf(Color.Transparent, Color.Black.copy(alpha = shadowAlpha))
+                                )
+                            )
+                        },
+                ) {
+                    BookPageCard(
+                        page = outLeft,
+                        isLeftSide = true,
+                        themeSettings = themeSettings,
+                        headlineStyle = headlineStyle,
+                        subtitleStyle = subtitleStyle,
+                        bodyStyle = bodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = onAddCalendarEvent,
+                        onOpenMaps = onOpenMaps,
+                        onOpenOriginalReaderView = onOpenOriginalReaderView,
+                    )
+                }
+            }
+        }
+
+        // CENTER SPINE / HINGE BUFFER
+        Box(
+            modifier = Modifier
+                .width(hingeGap)
+                .fillMaxHeight(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(2.dp)
+                    .fillMaxHeight(0.82f)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                                Color.Transparent,
+                            )
+                        )
+                    ),
+            )
+        }
+
+        // RIGHT COLUMN PAGE
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clipToBounds(),
+        ) {
+            if (isFlipping && flipDirection < 0 && flipProgress < 0.5f) {
+                // Backward flip first half: right stays on outgoing right page
+                outRight?.let {
+                    BookPageCard(
+                        page = it,
+                        isLeftSide = false,
+                        themeSettings = themeSettings,
+                        headlineStyle = headlineStyle,
+                        subtitleStyle = subtitleStyle,
+                        bodyStyle = bodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = onAddCalendarEvent,
+                        onOpenMaps = onOpenMaps,
+                        onOpenOriginalReaderView = onOpenOriginalReaderView,
+                    )
+                }
+            } else if (rightPage != null) {
+                BookPageCard(
+                    page = rightPage,
+                    isLeftSide = false,
+                    themeSettings = themeSettings,
+                    headlineStyle = headlineStyle,
+                    subtitleStyle = subtitleStyle,
+                    bodyStyle = bodyStyle,
+                    isExtractingFullText = isExtractingFullText,
+                    onAddCalendarEvent = onAddCalendarEvent,
+                    onOpenMaps = onOpenMaps,
+                    onOpenOriginalReaderView = onOpenOriginalReaderView,
+                )
+            } else {
+                // Opaque end-of-story colophon card on trailing right page
+                val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+                Surface(
+                    shape = RoundedCornerShape(OneUiCardRadius),
+                    color = if (isDark) AmoledCardElevated else MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AutoStories,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                                modifier = Modifier.size(32.dp),
+                            )
+                            Text(
+                                text = "End of Article",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = "Flip forward for the next dispatch",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Forward flip first half (0..0.5): outgoing right page rotates 0 -> -90 around left spine
+            if (isFlipping && flipDirection > 0 && flipProgress < 0.5f && outRight != null) {
+                val angle = -flipProgress * 180f
+                val shadowAlpha = (flipProgress * 0.65f).coerceIn(0f, 0.5f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(2f)
+                        .graphicsLayer {
+                            cameraDistance = 18f * density
+                            transformOrigin = TransformOrigin(0f, 0.5f)
+                            rotationY = angle
+                        }
+                        .drawWithContent {
+                            drawContent()
+                            drawRect(
+                                Brush.horizontalGradient(
+                                    listOf(Color.Black.copy(alpha = shadowAlpha), Color.Transparent)
+                                )
+                            )
+                        },
+                ) {
+                    BookPageCard(
+                        page = outRight,
+                        isLeftSide = false,
+                        themeSettings = themeSettings,
+                        headlineStyle = headlineStyle,
+                        subtitleStyle = subtitleStyle,
+                        bodyStyle = bodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = onAddCalendarEvent,
+                        onOpenMaps = onOpenMaps,
+                        onOpenOriginalReaderView = onOpenOriginalReaderView,
+                    )
+                }
+            } else if (isFlipping && flipDirection < 0 && flipProgress >= 0.5f && rightPage != null) {
+                // Backward flip second half: incoming right page rotates +90 -> 0 around left spine
+                val angle = (1f - flipProgress) * -180f // -90 -> 0
+                val shadowAlpha = ((1f - flipProgress) * 0.6f).coerceIn(0f, 0.45f)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(2f)
+                        .graphicsLayer {
+                            cameraDistance = 18f * density
+                            transformOrigin = TransformOrigin(0f, 0.5f)
+                            rotationY = angle
+                        }
+                        .drawWithContent {
+                            drawContent()
+                            drawRect(
+                                Brush.horizontalGradient(
+                                    listOf(Color.Transparent, Color.Black.copy(alpha = shadowAlpha))
+                                )
+                            )
+                        },
+                ) {
+                    BookPageCard(
+                        page = rightPage,
+                        isLeftSide = false,
+                        themeSettings = themeSettings,
+                        headlineStyle = headlineStyle,
+                        subtitleStyle = subtitleStyle,
+                        bodyStyle = bodyStyle,
+                        isExtractingFullText = isExtractingFullText,
+                        onAddCalendarEvent = onAddCalendarEvent,
+                        onOpenMaps = onOpenMaps,
+                        onOpenOriginalReaderView = onOpenOriginalReaderView,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SinglePageBookWithFlip(
+    pages: List<BookPageContent>,
+    currentIndex: Int,
+    outgoingIndex: Int,
+    isFlipping: Boolean,
+    flipDirection: Int,
+    flipProgress: Float,
+    themeSettings: ThemeSettings,
+    headlineStyle: TextStyle,
+    subtitleStyle: TextStyle,
+    bodyStyle: TextStyle,
+    isExtractingFullText: Boolean,
+    onAddCalendarEvent: (EventMetadata) -> Unit,
+    onOpenMaps: (LocationMetadata) -> Unit,
+    onOpenOriginalReaderView: (String) -> Unit,
+) {
+    val density = LocalDensity.current.density
+    val activePage = pages.getOrNull(currentIndex)
+    val prevPage = pages.getOrNull(outgoingIndex)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds(),
+    ) {
+        // Underlying incoming page (zIndex 0f)
+        activePage?.let { page ->
+            val revealScale = if (isFlipping) 0.97f + 0.03f * flipProgress else 1f
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(0f)
+                    .graphicsLayer {
+                        scaleX = revealScale
+                        scaleY = revealScale
+                    },
+            ) {
+                BookPageCard(
+                    page = page,
+                    isLeftSide = false,
+                    themeSettings = themeSettings,
+                    headlineStyle = headlineStyle,
+                    subtitleStyle = subtitleStyle,
+                    bodyStyle = bodyStyle,
+                    isExtractingFullText = isExtractingFullText,
+                    onAddCalendarEvent = onAddCalendarEvent,
+                    onOpenMaps = onOpenMaps,
+                    onOpenOriginalReaderView = onOpenOriginalReaderView,
+                )
+            }
+        }
+
+        // Flipping outgoing page turning like an opaque physical sheet (zIndex 2f)
+        if (isFlipping && prevPage != null && flipProgress < 0.99f) {
+            val rotation = if (flipDirection > 0) -96f * flipProgress else 96f * flipProgress
+            val originX = if (flipDirection > 0) 0f else 1f
+            val curlShadow = (abs(flipProgress) * 0.38f).coerceIn(0f, 0.38f)
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(2f)
+                    .graphicsLayer {
+                        cameraDistance = 16f * density
+                        transformOrigin = TransformOrigin(originX, 0.5f)
+                        rotationY = rotation
+                    }
+                    .drawWithContent {
+                        drawContent()
+                        drawRect(Color.Black.copy(alpha = curlShadow))
+                    },
+            ) {
+                BookPageCard(
+                    page = prevPage,
+                    isLeftSide = false,
+                    themeSettings = themeSettings,
+                    headlineStyle = headlineStyle,
+                    subtitleStyle = subtitleStyle,
+                    bodyStyle = bodyStyle,
+                    isExtractingFullText = isExtractingFullText,
+                    onAddCalendarEvent = onAddCalendarEvent,
+                    onOpenMaps = onOpenMaps,
+                    onOpenOriginalReaderView = onOpenOriginalReaderView,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BookPageCard(
+    page: BookPageContent,
+    isLeftSide: Boolean,
+    themeSettings: ThemeSettings,
+    headlineStyle: TextStyle,
+    subtitleStyle: TextStyle,
+    bodyStyle: TextStyle,
+    isExtractingFullText: Boolean,
+    onAddCalendarEvent: (EventMetadata) -> Unit,
+    onOpenMaps: (LocationMetadata) -> Unit,
+    onOpenOriginalReaderView: (String) -> Unit,
+) {
+    val haptics = rememberOneNewsHaptics()
+    val cornerShape = RoundedCornerShape(OneUiCardRadius)
+    val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val opaquePageColor = if (isDark) AmoledCardElevated else MaterialTheme.colorScheme.surfaceContainerLow
+
+    // 100% opaque paper surface so underlying pages never bleed through during page turns
+    Surface(
+        shape = cornerShape,
+        color = opaquePageColor,
+        border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
+        shadowElevation = 6.dp,
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds(),
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Subtle book spine shading gradient along inner edge
+            Box(
+                modifier = Modifier
+                    .width(22.dp)
+                    .fillMaxHeight()
+                    .align(if (isLeftSide) Alignment.CenterEnd else Alignment.CenterStart)
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = if (isLeftSide) {
+                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.16f))
+                            } else {
+                                listOf(Color.Black.copy(alpha = 0.16f), Color.Transparent)
+                            }
+                        )
+                    ),
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.SpaceBetween,
+            ) {
+                when (page) {
+                    is BookPageContent.CoverPage -> {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            if ((!page.article.imageUrl.isNullOrBlank() || page.article.imageResId != null) &&
+                                page.heroImageHeightDp > 40.dp
+                            ) {
+                                OneNewsArticleImage(
+                                    imageUrl = page.article.imageUrl,
+                                    fallbackResId = page.article.imageResId,
+                                    contentDescription = page.article.headline,
+                                    shape = RoundedCornerShape(18.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(page.heroImageHeightDp),
+                                )
+                            }
+
+                            Text(
+                                text = "${page.article.displayCategoryLabel.uppercase()} • ${page.article.timestamp}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold,
+                            )
+
+                            Text(
+                                text = page.article.headline,
+                                style = headlineStyle,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+
+                            Text(
+                                text = page.article.subtitle,
+                                style = subtitleStyle,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+
+                            if (page.openingParagraphs.isNotEmpty() || isExtractingFullText) {
+                                HorizontalDivider(
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+                                )
+                                if (isExtractingFullText) {
+                                    ArticleBodyShimmerSkeleton()
+                                } else {
+                                    page.openingParagraphs.forEach { para ->
+                                        Text(
+                                            text = para,
+                                            style = bodyStyle,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.92f),
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (page.isLastPage && !isExtractingFullText) {
+                                BookLastPageFooterExtras(
+                                    article = page.article,
+                                    themeSettings = themeSettings,
+                                    onAddCalendarEvent = onAddCalendarEvent,
+                                    onOpenMaps = onOpenMaps,
+                                    onOpenOriginalReaderView = onOpenOriginalReaderView,
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = "${page.article.readingTimeMinutes} min read",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = "${page.pageNumber} / ${page.totalPages}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+
+                    is BookPageContent.BodyPage -> {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            page.paragraphs.forEach { para ->
+                                Text(
+                                    text = para,
+                                    style = bodyStyle,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.92f),
+                                )
+                            }
+
+                            if (page.isLastPage && !isExtractingFullText) {
+                                BookLastPageFooterExtras(
+                                    article = page.article,
+                                    themeSettings = themeSettings,
+                                    onAddCalendarEvent = onAddCalendarEvent,
+                                    onOpenMaps = onOpenMaps,
+                                    onOpenOriginalReaderView = onOpenOriginalReaderView,
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(
+                                text = page.article.source,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = "${page.pageNumber} / ${page.totalPages}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BookLastPageFooterExtras(
+    article: NewsArticle,
+    themeSettings: ThemeSettings,
+    onAddCalendarEvent: (EventMetadata) -> Unit,
+    onOpenMaps: (LocationMetadata) -> Unit,
+    onOpenOriginalReaderView: (String) -> Unit,
+) {
+    val haptics = rememberOneNewsHaptics()
+
+    if (article.fullTextExtractionFailed && !article.articleUrl.isNullOrBlank()) {
+        OpenOriginalReaderPill(
+            onClick = { onOpenOriginalReaderView(article.articleUrl) },
+        )
+    }
+
+    if (themeSettings.showNowNudgeChips &&
+        (article.eventMetadata != null || article.locationMetadata != null)
+    ) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            article.eventMetadata?.let { event ->
+                Surface(
+                    onClick = {
+                        haptics.confirm()
+                        onAddCalendarEvent(event)
+                    },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.minimumInteractiveComponentSize(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(Icons.Rounded.CalendarMonth, null, Modifier.size(16.dp))
+                        Text("Add event to Calendar", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+            article.locationMetadata?.let { loc ->
+                Surface(
+                    onClick = {
+                        haptics.confirm()
+                        onOpenMaps(loc)
+                    },
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.tertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.minimumInteractiveComponentSize(),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(Icons.Rounded.LocationOn, null, Modifier.size(16.dp))
+                        Text("View location in Maps", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
+    }
+
+    EndOfArticleFooterCard(sourceName = article.source)
+}
+
+private fun paginateArticleForBook(
+    article: NewsArticle,
+    cardWidthDp: Dp,
+    cardHeightDp: Dp,
+    density: androidx.compose.ui.unit.Density,
+    textMeasurer: TextMeasurer,
+    headlineStyle: TextStyle,
+    subtitleStyle: TextStyle,
+    bodyStyle: TextStyle,
+    metaLabelStyle: TextStyle,
+    isFlexTabletop: Boolean,
+    includeNudgeFooter: Boolean,
+    includeOriginalReaderPill: Boolean,
+    includeEndOfArticleCard: Boolean,
+): List<BookPageContent> {
+    val cardPadPx = with(density) { 44.dp.toPx() }.roundToInt() // 22.dp * 2
+    val cardFooterRowPx = with(density) { 28.dp.toPx() }.roundToInt()
+    val safetyPx = with(density) { 8.dp.toPx() }.roundToInt()
+    val paraGapPx = with(density) { 12.dp.toPx() }.roundToInt()
+
+    val innerWidthPx = (with(density) { cardWidthDp.toPx() }.roundToInt() - cardPadPx).coerceAtLeast(140)
+    val pageHeightPx = (with(density) { cardHeightDp.toPx() }.roundToInt() - cardPadPx - cardFooterRowPx - safetyPx).coerceAtLeast(180)
+    val textConstraints = Constraints(maxWidth = innerWidthPx)
+
+    val hasLeadImage = !article.imageUrl.isNullOrBlank() || article.imageResId != null
+    val heroDp = if (hasLeadImage) {
+        when {
+            isFlexTabletop || cardHeightDp < 380.dp -> 88.dp
+            cardHeightDp < 500.dp -> 120.dp
+            else -> 145.dp
+        }
+    } else {
+        0.dp
+    }
+    val hasVisibleHero = hasLeadImage && heroDp > 40.dp
+    val heroBlockPx = if (hasVisibleHero) with(density) { heroDp.toPx() }.roundToInt() + paraGapPx else 0
+    val metaHeightPx = textMeasurer.measure("TECH • Today", metaLabelStyle, constraints = textConstraints).size.height
+    val headlineHeightPx = textMeasurer.measure(article.headline, headlineStyle, constraints = textConstraints).size.height
+    val subtitleHeightPx = textMeasurer.measure(article.subtitle, subtitleStyle, constraints = textConstraints).size.height
+    val dividerBlockPx = if (article.paragraphs.isNotEmpty()) {
+        with(density) { 2.dp.toPx() }.roundToInt() + paraGapPx
+    } else {
+        0
+    }
+
+    val coverHeaderPx = heroBlockPx +
+        metaHeightPx + paraGapPx +
+        headlineHeightPx + paraGapPx +
+        subtitleHeightPx +
+        dividerBlockPx
+
+    val originalPillReservePx = if (includeOriginalReaderPill) with(density) { 62.dp.toPx() }.roundToInt() else 0
+    val nudgeReservePx = if (includeNudgeFooter) with(density) { 66.dp.toPx() }.roundToInt() else 0
+    val endCardReservePx = if (includeEndOfArticleCard) with(density) { 78.dp.toPx() }.roundToInt() else 0
+    val lastPageFooterReservePx = originalPillReservePx + nudgeReservePx + endCardReservePx
+
+    val measuredPages = paginateArticleWithTextMeasurer(
+        paragraphs = article.paragraphs,
+        pageWidthPx = innerWidthPx,
+        pageHeightPx = pageHeightPx,
+        coverHeaderHeightPx = coverHeaderPx,
+        paraGapPx = paraGapPx,
+        lastPageFooterReservePx = lastPageFooterReservePx,
+        textMeasurer = textMeasurer,
+        bodyStyle = bodyStyle,
+        heroImageHeightDp = if (hasVisibleHero) heroDp else 0.dp,
+        allowBodyOnCoverPage = !isFlexTabletop && cardHeightDp > 420.dp,
+        coverHeaderIncludesTrailingGap = false,
+    )
+
+    val totalPages = measuredPages.size.coerceAtLeast(1)
+    return measuredPages.mapIndexed { idx, mp ->
+        if (mp.isCoverPage) {
+            BookPageContent.CoverPage(
+                article = article,
+                heroImageHeightDp = mp.heroImageHeightDp,
+                openingParagraphs = mp.paragraphs,
+                pageNumber = idx + 1,
+                totalPages = totalPages,
+                isLastPage = mp.isLastPage,
+            )
+        } else {
+            BookPageContent.BodyPage(
+                article = article,
+                paragraphs = mp.paragraphs,
+                pageNumber = idx + 1,
+                totalPages = totalPages,
+                isLastPage = mp.isLastPage,
+            )
+        }
+    }
+}
+
+private fun launchBookCalendarIntent(
+    context: Context,
+    event: EventMetadata,
+    onFeedback: (String) -> Unit,
+) {
+    val intent = Intent(Intent.ACTION_INSERT).apply {
+        data = CalendarContract.Events.CONTENT_URI
+        putExtra(CalendarContract.Events.TITLE, event.title)
+        putExtra(CalendarContract.Events.EVENT_LOCATION, event.locationLabel)
+        putExtra(CalendarContract.Events.DESCRIPTION, event.description)
+        putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, event.startTimeMillis)
+        putExtra(CalendarContract.EXTRA_EVENT_END_TIME, event.endTimeMillis)
+    }
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        onFeedback("Event prepared: ${event.title} (${event.dateTimeLabel})")
+    }
+}
+
+private fun launchBookMapsIntent(
+    context: Context,
+    location: LocationMetadata,
+    onFeedback: (String) -> Unit,
+) {
+    val geoUri = Uri.parse(
+        "geo:${location.latitude},${location.longitude}?q=${Uri.encode(location.venueName + ", " + location.address)}"
+    )
+    val intent = Intent(Intent.ACTION_VIEW, geoUri)
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        onFeedback("Location: ${location.venueName} • ${location.address}")
+    }
+}
+
+private fun shareBookArticle(context: Context, article: NewsArticle) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, article.headline)
+        putExtra(Intent.EXTRA_TEXT, "${article.headline}\n\n${article.subtitle}\n— ${article.source} via OneNews")
+    }
+    try {
+        context.startActivity(Intent.createChooser(intent, "Share article"))
+    } catch (_: ActivityNotFoundException) {
+    }
+}
