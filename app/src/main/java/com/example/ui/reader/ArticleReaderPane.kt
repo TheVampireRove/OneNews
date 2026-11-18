@@ -430,7 +430,7 @@ private fun StandardReaderLayout(
                         .let { if (applyWindowInsets) it.statusBarsPadding() else it }
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     if (showBackButton) {
                         GlassCircleButton(
@@ -451,12 +451,17 @@ private fun StandardReaderLayout(
                         )
                     }
 
-                    GlassSegmentedPill(
-                        options = ReaderViewMode.entries,
-                        selectedOption = viewMode,
-                        labelFor = { it.label },
-                        onSelect = { viewMode = it },
-                    )
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        GlassSegmentedPill(
+                            options = ReaderViewMode.entries,
+                            selectedOption = viewMode,
+                            labelFor = { it.label },
+                            onSelect = { viewMode = it },
+                        )
+                    }
 
                     GlassCircleButton(
                         icon = if (themeSettings.isPaginatedReadingMode) {

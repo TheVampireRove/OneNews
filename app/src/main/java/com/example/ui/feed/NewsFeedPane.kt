@@ -82,6 +82,7 @@ import com.example.ui.components.NowBriefHeroCard
 import com.example.ui.components.formatTodayDate
 import com.example.ui.components.glassBorderBrush
 import com.example.ui.components.glassFillColor
+import com.example.ui.components.rememberAutoHideScrollToTopVisible
 import com.example.ui.components.rememberOneNewsHaptics
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -313,12 +314,11 @@ fun NewsFeedPane(
                         selectedCustomCategory == null &&
                         selectedCategory == NewsCategory.ALL
 
-                    val showScrollToTop by remember(listState, articles) {
-                        derivedStateOf {
-                            articles.isNotEmpty() &&
-                                (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 260)
-                        }
-                    }
+                    val showScrollToTop = rememberAutoHideScrollToTopVisible(
+                        listState = listState,
+                        hasItems = articles.isNotEmpty(),
+                        isExternalScrolling = isScrollbarDragging || isHeaderScrolling,
+                    )
 
                     val scrubLabelForIndex: (Int) -> String? = remember(articles, hasNowBriefItem) {
                         { itemIdx ->

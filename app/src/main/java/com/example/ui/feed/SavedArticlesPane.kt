@@ -56,6 +56,7 @@ import com.example.ui.components.ArticleFeedCard
 import com.example.ui.components.CollapsibleOneUiHeader
 import com.example.ui.components.FeedBackToTopButton
 import com.example.ui.components.LazyListQuickScrollbar
+import com.example.ui.components.rememberAutoHideScrollToTopVisible
 import com.example.ui.components.rememberOneNewsHaptics
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -247,12 +248,11 @@ fun SavedArticlesPane(
                     }
                 }
             } else {
-                val showScrollToTop by remember(listState, displayed) {
-                    derivedStateOf {
-                        displayed.isNotEmpty() &&
-                            (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 260)
-                    }
-                }
+                val showScrollToTop = rememberAutoHideScrollToTopVisible(
+                    listState = listState,
+                    hasItems = displayed.isNotEmpty(),
+                    isExternalScrolling = isScrollbarDragging || isHeaderScrolling,
+                )
                 val scrubLabelForIndex: (Int) -> String? = remember(displayed) {
                     { itemIdx ->
                         val article = displayed.getOrNull(itemIdx)

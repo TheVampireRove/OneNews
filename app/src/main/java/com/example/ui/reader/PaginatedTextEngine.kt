@@ -5,6 +5,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.example.data.ArticleTextCleaner
 
 internal data class MeasuredPaginatedPage(
     val pageIndex: Int,
@@ -55,7 +56,7 @@ internal fun paginateArticleWithTextMeasurer(
     val safePageHeightPx = pageHeightPx.coerceAtLeast(160)
 
     val pages = mutableListOf<MeasuredPaginatedPage>()
-    val queue = ArrayDeque<String>(paragraphs.filter { it.isNotBlank() })
+    val queue = ArrayDeque<String>(ArticleTextCleaner.sanitizeParagraphs(paragraphs))
 
     var isFirstPage = true
     var usedHeightPx = coverHeaderHeightPx

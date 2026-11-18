@@ -17,8 +17,10 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -28,6 +30,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -55,6 +58,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -290,7 +297,8 @@ fun GlassCircleButton(
 }
 
 /**
- * Frosted glass segmented pill switcher modeled after the screenshot's top mode capsule.
+ * Compact frosted glass segmented pill switcher matching FloatingBottomNavBar's glass styling
+ * and snug uniform tray inset around the action pills.
  */
 @Composable
 fun <T> GlassSegmentedPill(
@@ -302,59 +310,110 @@ fun <T> GlassSegmentedPill(
 ) {
     val haptics = rememberOneNewsHaptics()
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val tertiaryColor = MaterialTheme.colorScheme.tertiary
+    val frostedBase = MaterialTheme.colorScheme.surfaceContainerHighest.copy(
+        alpha = if (isDark) 0.91f else 0.95f,
+    )
 
     Surface(
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (isDark) 0.58f else 0.78f),
-        border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
-        modifier = modifier,
+        color = Color.Transparent,
+        border = BorderStroke(1.2.dp, glassBorderBrush(highlighted = true)),
+        shadowElevation = 18.dp,
+        modifier = modifier
+            .clip(CircleShape)
+            .testTag("reader_mode_tray"),
     ) {
-        Row(
-            modifier = Modifier.padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            options.forEach { option ->
-                val selected = option == selectedOption
-                val pillColor by animateColorAsState(
-                    targetValue = if (selected) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = if (isDark) 0.34f else 0.22f)
-                    } else {
-                        Color.Transparent
-                    },
-                    label = "segmented_pill_bg",
-                )
-                val textColor by animateColorAsState(
-                    targetValue = if (selected) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    label = "segmented_pill_fg",
-                )
+        Box {
+            // Blurred frosted glass substrate matching FloatingBottomNavBar
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .blur(26.dp)
+                    .background(frostedBase)
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(
+                                primaryColor.copy(alpha = if (isDark) 0.18f else 0.10f),
+                                tertiaryColor.copy(alpha = if (isDark) 0.14f else 0.08f),
+                                primaryColor.copy(alpha = if (isDark) 0.18f else 0.10f),
+                            )
+                        )
+                    ),
+            )
 
-                Surface(
-                    onClick = {
-                        haptics.toggle()
-                        onSelect(option)
-                    },
-                    shape = CircleShape,
-                    color = pillColor,
-                    contentColor = textColor,
-                    border = if (selected) {
-                        BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-                    } else {
-                        null
-                    },
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .testTag("segmented_${labelFor(option).lowercase()}"),
-                ) {
-                    Text(
-                        text = labelFor(option),
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            // Top specular glass sheen matching FloatingBottomNavBar
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = if (isDark) 0.11f else 0.45f),
+                                frostedBase.copy(alpha = if (isDark) 0.72f else 0.78f),
+                                Color.Black.copy(alpha = if (isDark) 0.18f else 0.04f),
+                            )
+                        )
+                    ),
+            )
+
+            Row(
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 5.dp, vertical = 5.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                options.forEach { option ->
+                    val selected = option == selectedOption
+                    val pillColor by animateColorAsState(
+                        targetValue = if (selected) {
+                            primaryColor.copy(alpha = if (isDark) 0.38f else 0.24f)
+                        } else {
+                            Color.Transparent
+                        },
+                        label = "segmented_pill_bg",
                     )
+                    val textColor by animateColorAsState(
+                        targetValue = if (selected) {
+                            if (isDark) Color.White else primaryColor
+                        } else {
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.86f)
+                        },
+                        label = "segmented_pill_fg",
+                    )
+
+                    Surface(
+                        shape = CircleShape,
+                        color = pillColor,
+                        contentColor = textColor,
+                        border = if (selected) {
+                            BorderStroke(1.dp, primaryColor.copy(alpha = 0.72f))
+                        } else {
+                            null
+                        },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .semantics {
+                                this.selected = selected
+                            }
+                            .clickable(role = Role.Tab) {
+                                haptics.toggle()
+                                onSelect(option)
+                            }
+                            .testTag("segmented_${labelFor(option).lowercase()}"),
+                    ) {
+                        Text(
+                            text = labelFor(option),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = textColor,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
+                    }
                 }
             }
         }

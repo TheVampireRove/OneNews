@@ -46,7 +46,7 @@ import com.example.model.AudioPlaybackState
 import com.example.model.NewsArticle
 import com.example.model.NewsCategory
 import com.example.ui.theme.OneUiCardRadius
-import java.time.LocalTime
+import java.util.Calendar
 
 @Composable
 fun NowBriefHeroCard(
@@ -65,11 +65,7 @@ fun NowBriefHeroCard(
     var showTopicMenu by remember { mutableStateOf(false) }
 
     val hour = remember {
-        try {
-            LocalTime.now().hour
-        } catch (_: Exception) {
-            9
-        }
+        Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
     }
     val greetingTitle = when {
         hour < 12 -> "Morning Editor's Brief"

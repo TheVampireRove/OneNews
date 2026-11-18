@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -455,4 +456,62 @@ fun FeedBackToTopButton(
             }
         }
     }
+}
+
+/**
+ * Tracks whether a LazyColumn's "Back to top" button should be visible:
+ * returns true only when scrolled away from the top AND actively scrolling (or within the
+ * short post-scroll grace window), hiding automatically once scrolling stops and reappearing
+ * immediately when the user scrolls again.
+ */
+@Composable
+fun rememberAutoHideScrollToTopVisible(
+    listState: LazyListState,
+    hasItems: Boolean,
+    isExternalScrolling: Boolean = false,
+    idleHideDelayMillis: Long = 1200L,
+): Boolean {
+    val latestExternalScrolling by rememberUpdatedState(isExternalScrolling)
+    val isScrolledPastTop by remember(listState, hasItems) {
+        derivedStateOf {
+            hasItems && (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 260)
+        }
+    }
+    var scrollActivityPulse by remember { mutableIntStateOf(0) }
+    var isRecentlyScrolling by remember { mutableStateOf(false) }
+
+    LaunchedEffect(listState) {
+        var firstEmission = true
+        snapshotFlow {
+            Triple(
+                listState.isScrollInProgress || latestExternalScrolling,
+                listState.firstVisibleItemIndex,
+                listState.firstVisibleItemScrollOffset,
+            )
+        }
+            .distinctUntilChanged()
+            .collect { (active, _, _) ->
+                if (firstEmission) {
+                    firstEmission = false
+                    if (active) {
+                        scrollActivityPulse++
+                    }
+                } else {
+                    scrollActivityPulse++
+                }
+            }
+    }
+
+    LaunchedEffect(scrollActivityPulse, listState) {
+        if (scrollActivityPulse > 0) {
+            isRecentlyScrolling = true
+            while (listState.isScrollInProgress || latestExternalScrolling) {
+                delay(120L)
+            }
+            delay(idleHideDelayMillis)
+            isRecentlyScrolling = false
+        }
+    }
+
+    return isScrolledPastTop && (isRecentlyScrolling || listState.isScrollInProgress || isExternalScrolling)
 }

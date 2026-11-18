@@ -7,10 +7,13 @@ import android.net.Uri
 import android.provider.CalendarContract
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -69,11 +72,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -88,12 +88,12 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
 import androidx.window.layout.FoldingFeature
 import com.example.model.AudioPlaybackState
 import com.example.model.EventMetadata
 import com.example.model.LocationMetadata
 import com.example.model.NewsArticle
+import com.example.model.PageTurnAnimation
 import com.example.model.ThemeSettings
 import com.example.ui.components.ArticleBodyShimmerSkeleton
 import com.example.ui.components.BlurredAmbientBackdrop
@@ -104,29 +104,32 @@ import com.example.ui.components.OpenOriginalReaderPill
 import com.example.ui.components.glassBorderBrush
 import com.example.ui.components.glassFillColor
 import com.example.ui.components.rememberOneNewsHaptics
-import com.example.ui.theme.AmoledCardElevated
 import com.example.ui.theme.NewsreaderFontFamily
 import com.example.ui.theme.OneUiCardRadius
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private sealed interface BookPageContent {
+internal sealed interface BookPageContent {
+    val pageNumber: Int
+    val totalPages: Int
+    val isLastPage: Boolean
+
     data class CoverPage(
         val article: NewsArticle,
         val heroImageHeightDp: Dp,
         val openingParagraphs: List<String>,
-        val pageNumber: Int,
-        val totalPages: Int,
-        val isLastPage: Boolean,
+        override val pageNumber: Int,
+        override val totalPages: Int,
+        override val isLastPage: Boolean,
     ) : BookPageContent
 
     data class BodyPage(
         val article: NewsArticle,
         val paragraphs: List<String>,
-        val pageNumber: Int,
-        val totalPages: Int,
-        val isLastPage: Boolean,
+        override val pageNumber: Int,
+        override val totalPages: Int,
+        override val isLastPage: Boolean,
     ) : BookPageContent
 }
 
@@ -270,45 +273,74 @@ fun FullScreenBookReader(
         val maxPageStart = ((pages.size - 1) / stepSize) * stepSize
         currentPageIndex = currentPageIndex.coerceIn(0, maxPageStart.coerceAtLeast(0))
 
-        // 3D book page-flipping animation state
-        var outgoingPageIndex by remember(article.id) { mutableIntStateOf(0) }
-        var flipDirection by remember { mutableIntStateOf(1) } // 1 = forward, -1 = backward
-        val flipAnim = remember { Animatable(1f) }
-        var isFlipping by remember { mutableStateOf(false) }
-        var dragAccumulated by remember { mutableFloatStateOf(0f) }
+        // Interactive Kindle-style page-turning animation state (0f = flat resting, 1f = turn completed)
+        var turnDirection by remember(article.id) { mutableIntStateOf(1) }
+        var dragAnchorY by remember(article.id) { mutableFloatStateOf(0.55f) }
+        val turnProgress = remember(article.id) { Animatable(0f) }
+        var isTurning by remember(article.id) { mutableStateOf(false) }
 
         LaunchedEffect(article.id) {
             currentPageIndex = 0
-            outgoingPageIndex = 0
-            flipAnim.snapTo(1f)
-            isFlipping = false
+            turnProgress.snapTo(0f)
+            isTurning = false
         }
 
-        fun turnPage(direction: Int) {
-            if (isFlipping) return
+        fun animateTurn(direction: Int, startProgress: Float = 0f) {
             val targetIndex = currentPageIndex + (direction * stepSize)
             if (targetIndex < 0) {
                 haptics.pageFlip()
+                scope.launch { turnProgress.snapTo(0f) }
+                isTurning = false
                 onPreviousArticle()
                 return
             }
             if (targetIndex >= pages.size) {
                 haptics.pageFlip()
+                scope.launch { turnProgress.snapTo(0f) }
+                isTurning = false
                 onNextArticle()
                 return
             }
+
             haptics.pageFlip()
-            outgoingPageIndex = currentPageIndex
-            currentPageIndex = targetIndex
-            flipDirection = direction
+            if (themeSettings.pageTurnAnimation == PageTurnAnimation.INSTANT) {
+                scope.launch {
+                    turnProgress.snapTo(0f)
+                    isTurning = false
+                    currentPageIndex = targetIndex
+                }
+                return
+            }
+
+            turnDirection = direction
+            isTurning = true
             scope.launch {
-                isFlipping = true
-                flipAnim.snapTo(0f)
-                flipAnim.animateTo(
+                if (startProgress <= 0f) {
+                    turnProgress.snapTo(0.02f)
+                }
+                turnProgress.animateTo(
                     targetValue = 1f,
-                    animationSpec = tween(durationMillis = 520, easing = FastOutSlowInEasing),
+                    animationSpec = tween(
+                        durationMillis = if (startProgress > 0.2f) 320 else 480,
+                        easing = FastOutSlowInEasing,
+                    ),
                 )
-                isFlipping = false
+                currentPageIndex = targetIndex
+                isTurning = false
+                turnProgress.snapTo(0f)
+            }
+        }
+
+        fun springBackCurl() {
+            scope.launch {
+                turnProgress.animateTo(
+                    targetValue = 0f,
+                    animationSpec = spring(
+                        dampingRatio = 0.78f,
+                        stiffness = Spring.StiffnessMedium,
+                    ),
+                )
+                isTurning = false
             }
         }
 
@@ -456,51 +488,85 @@ fun FullScreenBookReader(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .pointerInput(currentPageIndex, pages.size, isTwoColumnSpread) {
+                    .pointerInput(currentPageIndex, pages.size, isTwoColumnSpread, themeSettings.pageTurnAnimation) {
+                        detectTapGestures { offset ->
+                            if (isTurning) return@detectTapGestures
+                            val widthF = size.width.toFloat().coerceAtLeast(1f)
+                            val xNorm = offset.x / widthF
+                            dragAnchorY = (offset.y / size.height.toFloat().coerceAtLeast(1f)).coerceIn(0.15f, 0.85f)
+                            when {
+                                xNorm > 0.78f -> animateTurn(1)
+                                xNorm < 0.22f -> animateTurn(-1)
+                            }
+                        }
+                    }
+                    .pointerInput(currentPageIndex, pages.size, isTwoColumnSpread, themeSettings.pageTurnAnimation) {
+                        var activeDragDirection = 0
+                        var accumulatedDx = 0f
                         detectHorizontalDragGestures(
-                            onDragStart = { dragAccumulated = 0f },
-                            onHorizontalDrag = { _, dragAmount -> dragAccumulated += dragAmount },
-                            onDragEnd = {
-                                if (dragAccumulated < -70f) {
-                                    turnPage(1)
-                                } else if (dragAccumulated > 70f) {
-                                    turnPage(-1)
+                            onDragStart = { startOffset ->
+                                activeDragDirection = 0
+                                accumulatedDx = 0f
+                                dragAnchorY = (startOffset.y / size.height.toFloat().coerceAtLeast(1f)).coerceIn(0.15f, 0.85f)
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                accumulatedDx += dragAmount
+                                val widthF = size.width.toFloat().coerceAtLeast(1f)
+                                if (activeDragDirection == 0 && abs(accumulatedDx) > 8f) {
+                                    val candidateDir = if (accumulatedDx < 0f) 1 else -1
+                                    activeDragDirection = candidateDir
+                                    turnDirection = candidateDir
+                                    isTurning = true
                                 }
-                                dragAccumulated = 0f
+                                if (activeDragDirection != 0) {
+                                    dragAnchorY = (change.position.y / size.height.toFloat().coerceAtLeast(1f)).coerceIn(0.12f, 0.88f)
+                                    val rawProgress = if (activeDragDirection > 0) {
+                                        (-accumulatedDx / (widthF * 0.75f)).coerceIn(0f, 1f)
+                                    } else {
+                                        (accumulatedDx / (widthF * 0.75f)).coerceIn(0f, 1f)
+                                    }
+                                    if (themeSettings.pageTurnAnimation != PageTurnAnimation.INSTANT) {
+                                        scope.launch { turnProgress.snapTo(rawProgress) }
+                                    }
+                                }
+                            },
+                            onDragCancel = {
+                                activeDragDirection = 0
+                                springBackCurl()
+                            },
+                            onDragEnd = {
+                                val widthF = size.width.toFloat().coerceAtLeast(1f)
+                                val dragRatio = if (activeDragDirection > 0) {
+                                    (-accumulatedDx / widthF).coerceIn(0f, 1f)
+                                } else if (activeDragDirection < 0) {
+                                    (accumulatedDx / widthF).coerceIn(0f, 1f)
+                                } else {
+                                    0f
+                                }
+                                val currentProg = if (themeSettings.pageTurnAnimation == PageTurnAnimation.INSTANT) {
+                                    dragRatio
+                                } else {
+                                    maxOf(turnProgress.value, dragRatio)
+                                }
+                                if (activeDragDirection != 0 && currentProg >= 0.28f) {
+                                    animateTurn(activeDragDirection, startProgress = turnProgress.value)
+                                } else {
+                                    springBackCurl()
+                                }
+                                activeDragDirection = 0
                             },
                         )
                     },
             ) {
-                val progress = flipAnim.value
+                val progress = turnProgress.value.coerceIn(0f, 1f)
+                val targetIndex = (currentPageIndex + turnDirection * stepSize)
+                    .coerceIn(0, (pages.size - 1).coerceAtLeast(0))
 
-                if (isTwoColumnSpread && !isFlexTabletop) {
-                    // Two-Column Open-Book Spread with Realistic Spine Page Flip
-                    TwoColumnBookSpreadWithFlip(
-                        pages = pages,
-                        currentIndex = currentPageIndex,
-                        outgoingIndex = outgoingPageIndex,
-                        isFlipping = isFlipping,
-                        flipDirection = flipDirection,
-                        flipProgress = progress,
-                        hingeGap = hingePaddingDp,
-                        themeSettings = themeSettings,
-                        headlineStyle = coverHeadlineStyle,
-                        subtitleStyle = coverSubtitleStyle,
-                        bodyStyle = bookBodyStyle,
-                        isExtractingFullText = isExtractingFullText,
-                        onAddCalendarEvent = { launchBookCalendarIntent(context, it, onShowMessage) },
-                        onOpenMaps = { launchBookMapsIntent(context, it, onShowMessage) },
-                        onOpenOriginalReaderView = { url -> readerWebViewUrl = url },
-                    )
-                } else {
-                    // Single-Page Book Flip (Cover Screen or Tabletop top half)
-                    SinglePageBookWithFlip(
-                        pages = pages,
-                        currentIndex = currentPageIndex,
-                        outgoingIndex = outgoingPageIndex,
-                        isFlipping = isFlipping,
-                        flipDirection = flipDirection,
-                        flipProgress = progress,
+                val renderBookPage: @Composable (BookPageContent, Boolean) -> Unit = { page, isLeftSide ->
+                    BookPageCard(
+                        page = page,
+                        isLeftSide = isLeftSide,
                         themeSettings = themeSettings,
                         headlineStyle = coverHeadlineStyle,
                         subtitleStyle = coverSubtitleStyle,
@@ -511,24 +577,56 @@ fun FullScreenBookReader(
                         onOpenOriginalReaderView = { url -> readerWebViewUrl = url },
                     )
                 }
+
+                if (isTwoColumnSpread && !isFlexTabletop) {
+                    TwoColumnBookSpreadContent(
+                        pages = pages,
+                        currentIndex = currentPageIndex,
+                        targetIndex = targetIndex,
+                        isTurning = isTurning,
+                        turnDirection = turnDirection,
+                        turnProgress = progress,
+                        anchorYFraction = dragAnchorY,
+                        hingeGap = hingePaddingDp,
+                        animationMode = themeSettings.pageTurnAnimation,
+                        renderPage = renderBookPage,
+                    )
+                } else {
+                    SinglePageBookContent(
+                        currentPage = pages.getOrNull(currentPageIndex),
+                        nextOrPrevPage = pages.getOrNull(targetIndex)
+                            ?.takeIf { targetIndex != currentPageIndex },
+                        isTurning = isTurning,
+                        turnDirection = turnDirection,
+                        turnProgress = progress,
+                        anchorYFraction = dragAnchorY,
+                        animationMode = themeSettings.pageTurnAnimation,
+                        renderPage = renderBookPage,
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Bottom Thumb-Zone Book Page-Turner Deck
+            // Bottom Thumb-Zone Book Page-Turner Deck (consistent frosted glass style & automatic theme-adaptive text)
+            val navButtonColor = glassFillColor(
+                alpha = 0.64f,
+                baseColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            )
+            val navButtonContentColor = MaterialTheme.colorScheme.onSurface
+            val navButtonBorder = BorderStroke(1.dp, glassBorderBrush(highlighted = false))
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Surface(
-                    onClick = { turnPage(-1) },
+                    onClick = { if (!isTurning) animateTurn(-1) },
                     shape = CircleShape,
-                    color = glassFillColor(
-                        alpha = 0.64f,
-                        baseColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    ),
-                    border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
+                    color = navButtonColor,
+                    contentColor = navButtonContentColor,
+                    border = navButtonBorder,
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
                         .testTag("book_prev_page_button"),
@@ -538,10 +636,16 @@ fun FullScreenBookReader(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, null, Modifier.size(18.dp))
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                            contentDescription = null,
+                            tint = navButtonContentColor,
+                            modifier = Modifier.size(18.dp),
+                        )
                         Text(
                             text = if (currentPageIndex == 0) "Prev Story" else "Prev Page",
                             style = MaterialTheme.typography.labelLarge,
+                            color = navButtonContentColor,
                         )
                     }
                 }
@@ -572,10 +676,11 @@ fun FullScreenBookReader(
                 }
 
                 Surface(
-                    onClick = { turnPage(1) },
+                    onClick = { if (!isTurning) animateTurn(1) },
                     shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    color = navButtonColor,
+                    contentColor = navButtonContentColor,
+                    border = navButtonBorder,
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
                         .testTag("book_next_page_button"),
@@ -589,415 +694,16 @@ fun FullScreenBookReader(
                         Text(
                             text = if (isAtEnd) "Next Story" else "Flip Page",
                             style = MaterialTheme.typography.labelLarge,
+                            color = navButtonContentColor,
                         )
-                        Icon(Icons.AutoMirrored.Rounded.ArrowForward, null, Modifier.size(18.dp))
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TwoColumnBookSpreadWithFlip(
-    pages: List<BookPageContent>,
-    currentIndex: Int,
-    outgoingIndex: Int,
-    isFlipping: Boolean,
-    flipDirection: Int,
-    flipProgress: Float,
-    hingeGap: Dp,
-    themeSettings: ThemeSettings,
-    headlineStyle: TextStyle,
-    subtitleStyle: TextStyle,
-    bodyStyle: TextStyle,
-    isExtractingFullText: Boolean,
-    onAddCalendarEvent: (EventMetadata) -> Unit,
-    onOpenMaps: (LocationMetadata) -> Unit,
-    onOpenOriginalReaderView: (String) -> Unit,
-) {
-    val density = LocalDensity.current.density
-
-    val leftPage = pages.getOrNull(currentIndex)
-    val rightPage = pages.getOrNull(currentIndex + 1)
-
-    val outLeft = pages.getOrNull(outgoingIndex)
-    val outRight = pages.getOrNull(outgoingIndex + 1)
-
-    Row(
-        modifier = Modifier.fillMaxSize(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        // LEFT COLUMN PAGE
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .clipToBounds(),
-        ) {
-            if (isFlipping && flipDirection > 0 && flipProgress < 0.5f) {
-                // While right page is lifting (0..0.5), left stays on old left page
-                outLeft?.let {
-                    BookPageCard(
-                        page = it,
-                        isLeftSide = true,
-                        themeSettings = themeSettings,
-                        headlineStyle = headlineStyle,
-                        subtitleStyle = subtitleStyle,
-                        bodyStyle = bodyStyle,
-                        isExtractingFullText = isExtractingFullText,
-                        onAddCalendarEvent = onAddCalendarEvent,
-                        onOpenMaps = onOpenMaps,
-                        onOpenOriginalReaderView = onOpenOriginalReaderView,
-                    )
-                }
-            } else {
-                leftPage?.let {
-                    BookPageCard(
-                        page = it,
-                        isLeftSide = true,
-                        themeSettings = themeSettings,
-                        headlineStyle = headlineStyle,
-                        subtitleStyle = subtitleStyle,
-                        bodyStyle = bodyStyle,
-                        isExtractingFullText = isExtractingFullText,
-                        onAddCalendarEvent = onAddCalendarEvent,
-                        onOpenMaps = onOpenMaps,
-                        onOpenOriginalReaderView = onOpenOriginalReaderView,
-                    )
-                }
-            }
-
-            // Backward flip: outgoing left page rotates 0 -> +180 around right spine;
-            // Forward flip (second half 0.5..1.0): incoming new left page lands from -90 -> 0
-            if (isFlipping && flipDirection > 0 && flipProgress >= 0.5f && leftPage != null) {
-                val angle = (1f - flipProgress) * 180f // 90 -> 0
-                val shadowAlpha = ((1f - flipProgress) * 0.55f).coerceIn(0f, 0.45f)
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .zIndex(2f)
-                        .graphicsLayer {
-                            cameraDistance = 18f * density
-                            transformOrigin = TransformOrigin(1f, 0.5f)
-                            rotationY = angle
-                        }
-                        .drawWithContent {
-                            drawContent()
-                            drawRect(
-                                Brush.horizontalGradient(
-                                    listOf(Color.Black.copy(alpha = shadowAlpha), Color.Transparent)
-                                )
-                            )
-                        },
-                ) {
-                    BookPageCard(
-                        page = leftPage,
-                        isLeftSide = true,
-                        themeSettings = themeSettings,
-                        headlineStyle = headlineStyle,
-                        subtitleStyle = subtitleStyle,
-                        bodyStyle = bodyStyle,
-                        isExtractingFullText = isExtractingFullText,
-                        onAddCalendarEvent = onAddCalendarEvent,
-                        onOpenMaps = onOpenMaps,
-                        onOpenOriginalReaderView = onOpenOriginalReaderView,
-                    )
-                }
-            } else if (isFlipping && flipDirection < 0 && flipProgress < 0.5f && outLeft != null) {
-                val angle = flipProgress * 180f // 0 -> 90
-                val shadowAlpha = (flipProgress * 0.6f).coerceIn(0f, 0.45f)
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .zIndex(2f)
-                        .graphicsLayer {
-                            cameraDistance = 18f * density
-                            transformOrigin = TransformOrigin(1f, 0.5f)
-                            rotationY = angle
-                        }
-                        .drawWithContent {
-                            drawContent()
-                            drawRect(
-                                Brush.horizontalGradient(
-                                    listOf(Color.Transparent, Color.Black.copy(alpha = shadowAlpha))
-                                )
-                            )
-                        },
-                ) {
-                    BookPageCard(
-                        page = outLeft,
-                        isLeftSide = true,
-                        themeSettings = themeSettings,
-                        headlineStyle = headlineStyle,
-                        subtitleStyle = subtitleStyle,
-                        bodyStyle = bodyStyle,
-                        isExtractingFullText = isExtractingFullText,
-                        onAddCalendarEvent = onAddCalendarEvent,
-                        onOpenMaps = onOpenMaps,
-                        onOpenOriginalReaderView = onOpenOriginalReaderView,
-                    )
-                }
-            }
-        }
-
-        // CENTER SPINE / HINGE BUFFER
-        Box(
-            modifier = Modifier
-                .width(hingeGap)
-                .fillMaxHeight(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                modifier = Modifier
-                    .width(2.dp)
-                    .fillMaxHeight(0.82f)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
-                                Color.Transparent,
-                            )
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                            contentDescription = null,
+                            tint = navButtonContentColor,
+                            modifier = Modifier.size(18.dp),
                         )
-                    ),
-            )
-        }
-
-        // RIGHT COLUMN PAGE
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .clipToBounds(),
-        ) {
-            if (isFlipping && flipDirection < 0 && flipProgress < 0.5f) {
-                // Backward flip first half: right stays on outgoing right page
-                outRight?.let {
-                    BookPageCard(
-                        page = it,
-                        isLeftSide = false,
-                        themeSettings = themeSettings,
-                        headlineStyle = headlineStyle,
-                        subtitleStyle = subtitleStyle,
-                        bodyStyle = bodyStyle,
-                        isExtractingFullText = isExtractingFullText,
-                        onAddCalendarEvent = onAddCalendarEvent,
-                        onOpenMaps = onOpenMaps,
-                        onOpenOriginalReaderView = onOpenOriginalReaderView,
-                    )
-                }
-            } else if (rightPage != null) {
-                BookPageCard(
-                    page = rightPage,
-                    isLeftSide = false,
-                    themeSettings = themeSettings,
-                    headlineStyle = headlineStyle,
-                    subtitleStyle = subtitleStyle,
-                    bodyStyle = bodyStyle,
-                    isExtractingFullText = isExtractingFullText,
-                    onAddCalendarEvent = onAddCalendarEvent,
-                    onOpenMaps = onOpenMaps,
-                    onOpenOriginalReaderView = onOpenOriginalReaderView,
-                )
-            } else {
-                // Opaque end-of-story colophon card on trailing right page
-                val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-                Surface(
-                    shape = RoundedCornerShape(OneUiCardRadius),
-                    color = if (isDark) AmoledCardElevated else MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize().padding(24.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.AutoStories,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                                modifier = Modifier.size(32.dp),
-                            )
-                            Text(
-                                text = "End of Article",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                text = "Flip forward for the next dispatch",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
-                            )
-                        }
                     }
                 }
-            }
-
-            // Forward flip first half (0..0.5): outgoing right page rotates 0 -> -90 around left spine
-            if (isFlipping && flipDirection > 0 && flipProgress < 0.5f && outRight != null) {
-                val angle = -flipProgress * 180f
-                val shadowAlpha = (flipProgress * 0.65f).coerceIn(0f, 0.5f)
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .zIndex(2f)
-                        .graphicsLayer {
-                            cameraDistance = 18f * density
-                            transformOrigin = TransformOrigin(0f, 0.5f)
-                            rotationY = angle
-                        }
-                        .drawWithContent {
-                            drawContent()
-                            drawRect(
-                                Brush.horizontalGradient(
-                                    listOf(Color.Black.copy(alpha = shadowAlpha), Color.Transparent)
-                                )
-                            )
-                        },
-                ) {
-                    BookPageCard(
-                        page = outRight,
-                        isLeftSide = false,
-                        themeSettings = themeSettings,
-                        headlineStyle = headlineStyle,
-                        subtitleStyle = subtitleStyle,
-                        bodyStyle = bodyStyle,
-                        isExtractingFullText = isExtractingFullText,
-                        onAddCalendarEvent = onAddCalendarEvent,
-                        onOpenMaps = onOpenMaps,
-                        onOpenOriginalReaderView = onOpenOriginalReaderView,
-                    )
-                }
-            } else if (isFlipping && flipDirection < 0 && flipProgress >= 0.5f && rightPage != null) {
-                // Backward flip second half: incoming right page rotates +90 -> 0 around left spine
-                val angle = (1f - flipProgress) * -180f // -90 -> 0
-                val shadowAlpha = ((1f - flipProgress) * 0.6f).coerceIn(0f, 0.45f)
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .zIndex(2f)
-                        .graphicsLayer {
-                            cameraDistance = 18f * density
-                            transformOrigin = TransformOrigin(0f, 0.5f)
-                            rotationY = angle
-                        }
-                        .drawWithContent {
-                            drawContent()
-                            drawRect(
-                                Brush.horizontalGradient(
-                                    listOf(Color.Transparent, Color.Black.copy(alpha = shadowAlpha))
-                                )
-                            )
-                        },
-                ) {
-                    BookPageCard(
-                        page = rightPage,
-                        isLeftSide = false,
-                        themeSettings = themeSettings,
-                        headlineStyle = headlineStyle,
-                        subtitleStyle = subtitleStyle,
-                        bodyStyle = bodyStyle,
-                        isExtractingFullText = isExtractingFullText,
-                        onAddCalendarEvent = onAddCalendarEvent,
-                        onOpenMaps = onOpenMaps,
-                        onOpenOriginalReaderView = onOpenOriginalReaderView,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SinglePageBookWithFlip(
-    pages: List<BookPageContent>,
-    currentIndex: Int,
-    outgoingIndex: Int,
-    isFlipping: Boolean,
-    flipDirection: Int,
-    flipProgress: Float,
-    themeSettings: ThemeSettings,
-    headlineStyle: TextStyle,
-    subtitleStyle: TextStyle,
-    bodyStyle: TextStyle,
-    isExtractingFullText: Boolean,
-    onAddCalendarEvent: (EventMetadata) -> Unit,
-    onOpenMaps: (LocationMetadata) -> Unit,
-    onOpenOriginalReaderView: (String) -> Unit,
-) {
-    val density = LocalDensity.current.density
-    val activePage = pages.getOrNull(currentIndex)
-    val prevPage = pages.getOrNull(outgoingIndex)
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .clipToBounds(),
-    ) {
-        // Underlying incoming page (zIndex 0f)
-        activePage?.let { page ->
-            val revealScale = if (isFlipping) 0.97f + 0.03f * flipProgress else 1f
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .zIndex(0f)
-                    .graphicsLayer {
-                        scaleX = revealScale
-                        scaleY = revealScale
-                    },
-            ) {
-                BookPageCard(
-                    page = page,
-                    isLeftSide = false,
-                    themeSettings = themeSettings,
-                    headlineStyle = headlineStyle,
-                    subtitleStyle = subtitleStyle,
-                    bodyStyle = bodyStyle,
-                    isExtractingFullText = isExtractingFullText,
-                    onAddCalendarEvent = onAddCalendarEvent,
-                    onOpenMaps = onOpenMaps,
-                    onOpenOriginalReaderView = onOpenOriginalReaderView,
-                )
-            }
-        }
-
-        // Flipping outgoing page turning like an opaque physical sheet (zIndex 2f)
-        if (isFlipping && prevPage != null && flipProgress < 0.99f) {
-            val rotation = if (flipDirection > 0) -96f * flipProgress else 96f * flipProgress
-            val originX = if (flipDirection > 0) 0f else 1f
-            val curlShadow = (abs(flipProgress) * 0.38f).coerceIn(0f, 0.38f)
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .zIndex(2f)
-                    .graphicsLayer {
-                        cameraDistance = 16f * density
-                        transformOrigin = TransformOrigin(originX, 0.5f)
-                        rotationY = rotation
-                    }
-                    .drawWithContent {
-                        drawContent()
-                        drawRect(Color.Black.copy(alpha = curlShadow))
-                    },
-            ) {
-                BookPageCard(
-                    page = prevPage,
-                    isLeftSide = false,
-                    themeSettings = themeSettings,
-                    headlineStyle = headlineStyle,
-                    subtitleStyle = subtitleStyle,
-                    bodyStyle = bodyStyle,
-                    isExtractingFullText = isExtractingFullText,
-                    onAddCalendarEvent = onAddCalendarEvent,
-                    onOpenMaps = onOpenMaps,
-                    onOpenOriginalReaderView = onOpenOriginalReaderView,
-                )
             }
         }
     }
@@ -1017,20 +723,22 @@ private fun BookPageCard(
     onOpenMaps: (LocationMetadata) -> Unit,
     onOpenOriginalReaderView: (String) -> Unit,
 ) {
-    val haptics = rememberOneNewsHaptics()
     val cornerShape = RoundedCornerShape(OneUiCardRadius)
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val opaquePageColor = if (isDark) AmoledCardElevated else MaterialTheme.colorScheme.surfaceContainerLow
+    val opaquePageColor = bookPageSurfaceColor(MaterialTheme.colorScheme)
+    val spineShadeAlpha = if (isDark) 0.15f else 0.07f
 
-    // 100% opaque paper surface so underlying pages never bleed through during page turns
+    // 100% opaque theme-matched paper surface (honors Monet dynamic color, tonal dark, light, and AMOLED)
     Surface(
         shape = cornerShape,
         color = opaquePageColor,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
         shadowElevation = 6.dp,
         modifier = Modifier
             .fillMaxSize()
-            .clipToBounds(),
+            .clipToBounds()
+            .testTag("book_page_card_${page.pageNumber}"),
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             // Subtle book spine shading gradient along inner edge
@@ -1042,9 +750,9 @@ private fun BookPageCard(
                     .background(
                         Brush.horizontalGradient(
                             colors = if (isLeftSide) {
-                                listOf(Color.Transparent, Color.Black.copy(alpha = 0.16f))
+                                listOf(Color.Transparent, Color.Black.copy(alpha = spineShadeAlpha))
                             } else {
-                                listOf(Color.Black.copy(alpha = 0.16f), Color.Transparent)
+                                listOf(Color.Black.copy(alpha = spineShadeAlpha), Color.Transparent)
                             }
                         )
                     ),

@@ -34,12 +34,12 @@ class MainActivity : ComponentActivity() {
             val layoutInfoFlow = remember(this) {
                 windowInfoTracker.windowLayoutInfo(this)
             }
-            val windowLayoutInfo by layoutInfoFlow.collectAsStateWithLifecycle(
-                initialValue = WindowLayoutInfo(emptyList()),
+            val windowLayoutInfo by layoutInfoFlow.collectAsStateWithLifecycle<WindowLayoutInfo?>(
+                initialValue = null,
             )
-            val foldingFeature = windowLayoutInfo.displayFeatures
-                .filterIsInstance<FoldingFeature>()
-                .firstOrNull()
+            val foldingFeature = windowLayoutInfo?.displayFeatures
+                ?.filterIsInstance<FoldingFeature>()
+                ?.firstOrNull()
 
             OneNewsTheme(themeSettings = uiState.themeSettings) {
                 OneNewsApp(

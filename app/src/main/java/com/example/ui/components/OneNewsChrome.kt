@@ -72,8 +72,9 @@ import androidx.compose.ui.unit.sp
 import com.example.model.AppDestination
 import com.example.model.AudioPlaybackState
 import com.example.model.NewsCategory
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
 fun CircularControlButton(
@@ -806,7 +807,7 @@ private fun destinationIcon(destination: AppDestination, selected: Boolean): Ima
 
 fun formatTodayDate(): String {
     return try {
-        LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, MMM d"))
+        SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(Date())
     } catch (_: Exception) {
         "Saturday, Nov 14"
     }

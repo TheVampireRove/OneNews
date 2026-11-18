@@ -8,6 +8,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -16,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -32,10 +37,14 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.up
+import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.ArticleFeedAggregator
+import com.example.data.ArticleTextCleaner
+import com.example.data.ArticleWebExtractor
 import com.example.data.FeedCategoryDetector
 import com.example.data.FeedChannelPreview
 import com.example.data.MockNewsRepository
@@ -50,13 +59,22 @@ import com.example.model.PageTurnAnimation
 import com.example.model.ThemeSettings
 import com.example.ui.NewsViewModel
 import com.example.ui.OneNewsUiState
+import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.getBoundsInRoot
 import com.example.ui.components.FloatingBottomNavBar
+import com.example.ui.components.GlassSegmentedPill
 import com.example.ui.components.PredictiveBackMotionSpecs
 import com.example.ui.feed.NewsFeedPane
+import com.example.ui.reader.ArticleReaderPane
+import com.example.ui.reader.FullScreenBookReader
 import com.example.ui.reader.KindlePaginatedReader
+import com.example.ui.reader.bookPageBackFaceColor
+import com.example.ui.reader.bookPageSurfaceColor
 import com.example.ui.reader.findCleanWordSplitOffset
 import com.example.ui.settings.AddFeedDialog
 import com.example.ui.settings.SourcesAndFeedsCard
+import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -1077,5 +1095,385 @@ class ExampleRobolectricTest {
         composeRule.waitForIdle()
 
         composeRule.onNodeWithTag("floating_bottom_nav_bar").assertIsDisplayed()
+    }
+
+    @Test
+    fun `book page surface color follows Monet dynamic palette in dark and light modes`() {
+        val monetBurgundyDark = darkColorScheme(
+            background = Color(0xFF1A1112),
+            surfaceContainer = Color(0xFF2B1D1F),
+            surfaceContainerHigh = Color(0xFF372729),
+        )
+        val monetBurgundyLight = lightColorScheme(
+            background = Color(0xFFFFF8F7),
+            surfaceContainerLow = Color(0xFFFFF0EF),
+            surfaceContainerHighest = Color(0xFFF2DEDD),
+        )
+
+        assertEquals(Color(0xFF2B1D1F), bookPageSurfaceColor(monetBurgundyDark))
+        assertEquals(Color(0xFF372729), bookPageBackFaceColor(monetBurgundyDark))
+        assertEquals(Color(0xFFFFF0EF), bookPageSurfaceColor(monetBurgundyLight))
+        assertEquals(Color(0xFFF2DEDD), bookPageBackFaceColor(monetBurgundyLight))
+    }
+
+    @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
+    @Test
+    fun `full screen book reader two column spread flips pages with Kindle curl and matching bottom buttons`() {
+        val longParagraphs = List(14) { idx ->
+            "Dispatch paragraph ${idx + 1}: Adaptive foldable editorial systems keep typography crisp and balanced across wide dual-pane spreads while preserving dynamic Monet surfaces and smooth page curl physics."
+        }
+        val longArticle = MockNewsRepository.getArticles().first().copy(
+            id = "book_spread_test",
+            headline = "Dual-Pane Book Spread Verification",
+            paragraphs = longParagraphs,
+        )
+        var nextStoryCalls = 0
+        var prevStoryCalls = 0
+        val expandedSizeClass = WindowSizeClass.calculateFromSize(DpSize(840.dp, 840.dp))
+
+        composeRule.setContent {
+            val monetScheme = darkColorScheme(
+                primary = Color(0xFFFFB4AB),
+                onPrimary = Color(0xFF690005),
+                background = Color(0xFF1A1112),
+                onBackground = Color(0xFFF1DFDE),
+                surface = Color(0xFF1A1112),
+                onSurface = Color(0xFFF1DFDE),
+                surfaceContainer = Color(0xFF2B1D1F),
+                surfaceContainerHigh = Color(0xFF372729),
+            )
+            MaterialTheme(colorScheme = monetScheme) {
+                Box(modifier = Modifier.size(840.dp, 840.dp)) {
+                    FullScreenBookReader(
+                        article = longArticle,
+                        windowSizeClass = expandedSizeClass,
+                        foldingFeature = null,
+                        isBookmarked = false,
+                        themeSettings = ThemeSettings(
+                            useDynamicColor = true,
+                            useAmoledBlack = false,
+                            pageTurnAnimation = PageTurnAnimation.KINDLE_CURL,
+                        ),
+                        audioState = AudioPlaybackState(),
+                        onClose = {},
+                        onPreviousArticle = { prevStoryCalls++ },
+                        onNextArticle = { nextStoryCalls++ },
+                        onToggleBookmark = {},
+                        onPlayArticleAudio = {},
+                        onFontScaleChange = {},
+                        onShowMessage = {},
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("full_screen_book_reader").assertIsDisplayed()
+        composeRule.onNodeWithTag("book_prev_page_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("book_next_page_button").assertIsDisplayed()
+        composeRule.onNodeWithText("Prev Story").assertIsDisplayed()
+        composeRule.onNodeWithText("Flip Page").assertIsDisplayed()
+        composeRule.onNodeWithTag("book_page_card_1").assertIsDisplayed()
+        composeRule.onNodeWithTag("book_page_card_2").assertIsDisplayed()
+
+        // Click Flip Page to trigger Kindle curl spread transition to pages 3-4
+        composeRule.onNodeWithTag("book_next_page_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("Prev Page").assertIsDisplayed()
+        composeRule.onNodeWithTag("book_page_card_3").assertIsDisplayed()
+
+        // Flip back to first spread using Prev Page button
+        composeRule.onNodeWithTag("book_prev_page_button").performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("Prev Story").assertIsDisplayed()
+        assertEquals(0, prevStoryCalls)
+        assertEquals(0, nextStoryCalls)
+    }
+
+    @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
+    @Test
+    fun `full screen book reader single page mode turns pages on swipe and calls next story at end`() {
+        val longParagraphs = List(10) { idx ->
+            "Cover screen paragraph ${idx + 1}: Interactive Kindle-style paper curl peels smoothly across narrow displays without clipping text or hardcoding dark backgrounds."
+        }
+        val article = MockNewsRepository.getArticles().first().copy(
+            id = "book_single_test",
+            headline = "Cover Screen Book Flip Test",
+            paragraphs = longParagraphs,
+        )
+        var nextStoryCalls = 0
+        val compactSizeClass = WindowSizeClass.calculateFromSize(DpSize(360.dp, 760.dp))
+
+        composeRule.setContent {
+            MaterialTheme {
+                Box(modifier = Modifier.size(360.dp, 760.dp)) {
+                    FullScreenBookReader(
+                        article = article,
+                        windowSizeClass = compactSizeClass,
+                        foldingFeature = null,
+                        isBookmarked = false,
+                        themeSettings = ThemeSettings(pageTurnAnimation = PageTurnAnimation.KINDLE_CURL),
+                        audioState = AudioPlaybackState(),
+                        onClose = {},
+                        onPreviousArticle = {},
+                        onNextArticle = { nextStoryCalls++ },
+                        onToggleBookmark = {},
+                        onPlayArticleAudio = {},
+                        onFontScaleChange = {},
+                        onShowMessage = {},
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("book_page_card_1").assertIsDisplayed()
+
+        // Swipe left across the reader surface to curl forward to Page 2
+        composeRule.onNodeWithTag("book_page_card_1").performTouchInput {
+            swipeLeft(startX = width * 0.85f, endX = width * 0.15f, durationMillis = 250L)
+        }
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag("book_page_card_2").assertIsDisplayed()
+        composeRule.onNodeWithText("Prev Page").assertIsDisplayed()
+
+        // Flip until Next Story appears on the final page, then advance to next story
+        var safety = 0
+        while (safety < 12) {
+            val isAtEnd = runCatching {
+                composeRule.onNodeWithText("Next Story").assertIsDisplayed()
+                true
+            }.getOrDefault(false)
+            if (isAtEnd) break
+            composeRule.onNodeWithTag("book_next_page_button").performClick()
+            composeRule.waitForIdle()
+            safety++
+        }
+
+        composeRule.onNodeWithText("Next Story").assertIsDisplayed()
+        composeRule.onNodeWithTag("book_next_page_button").performClick()
+        composeRule.waitForIdle()
+
+        assertEquals(1, nextStoryCalls)
+    }
+
+    @Test
+    fun `glass segmented pill tray wraps tightly around action buttons and switches selection`() {
+        val options = listOf("Article", "Brief", "Audio")
+        composeRule.setContent {
+            var selected by remember { mutableStateOf("Article") }
+            val monetDark = darkColorScheme(
+                primary = Color(0xFFFFB4AB),
+                tertiary = Color(0xFFE7C18E),
+                background = Color(0xFF1A1112),
+                surfaceContainerHighest = Color(0xFF3E2D2F),
+                onSurface = Color(0xFFF1DFDE),
+            )
+            MaterialTheme(colorScheme = monetDark) {
+                Box(modifier = Modifier.size(360.dp, 120.dp)) {
+                    GlassSegmentedPill(
+                        options = options,
+                        selectedOption = selected,
+                        labelFor = { it },
+                        onSelect = { selected = it },
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("reader_mode_tray").assertIsDisplayed()
+        composeRule.onNodeWithTag("segmented_article").assertIsSelected()
+        composeRule.onNodeWithTag("segmented_brief").assertIsNotSelected()
+
+        val trayBounds = composeRule.onNodeWithTag("reader_mode_tray").getBoundsInRoot()
+        val articleBounds = composeRule.onNodeWithTag("segmented_article").getBoundsInRoot()
+        val trayVerticalMargin = (trayBounds.bottom - trayBounds.top) - (articleBounds.bottom - articleBounds.top)
+        assertTrue(
+            "Expected snug vertical tray margin <= 14.dp around action pills, was $trayVerticalMargin",
+            trayVerticalMargin <= 14.dp,
+        )
+
+        composeRule.onNodeWithTag("segmented_brief").performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("segmented_brief").assertIsSelected()
+        composeRule.onNodeWithTag("segmented_article").assertIsNotSelected()
+    }
+
+    @Test
+    fun `back to top button disappears when idle and reappears when scrolling again`() {
+        val sampleArticles = buildSampleFeedArticles(18)
+
+        composeRule.setContent {
+            MaterialTheme {
+                Box(modifier = Modifier.size(360.dp, 640.dp)) {
+                    NewsFeedPane(
+                        articles = sampleArticles,
+                        nowBriefArticles = emptyList(),
+                        selectedCategory = NewsCategory.ALL,
+                        searchQuery = "",
+                        isSearchExpanded = false,
+                        selectedArticleId = null,
+                        highlightSelection = false,
+                        bookmarkedIds = emptySet(),
+                        offlineSavedIds = emptySet(),
+                        themeSettings = ThemeSettings(enableNowBrief = false),
+                        audioState = AudioPlaybackState(),
+                        initialScrollIndex = 0,
+                        initialScrollOffset = 0,
+                        bottomContentPadding = 16.dp,
+                        onSaveScrollPosition = { _, _ -> },
+                        onSelectCategory = {},
+                        onToggleSearch = {},
+                        onSearchQueryChange = {},
+                        onArticleClick = {},
+                        onToggleBookmark = {},
+                        onPlayArticleAudio = {},
+                        onPlayBriefAudio = {},
+                        onToggleBriefPlayPause = {},
+                        onSaveAllBriefOffline = {},
+                        onToggleBriefTopic = {},
+                        applyStatusBarPadding = false,
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("feed_scroll_to_top_button").assertDoesNotExist()
+
+        // Scroll down past top -> button appears
+        composeRule.onNodeWithTag("news_feed_list").performScrollToIndex(8)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("feed_scroll_to_top_button").assertIsDisplayed()
+
+        // Wait past idle timeout with no scrolling -> button disappears
+        composeRule.mainClock.advanceTimeBy(1600L)
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("feed_scroll_to_top_button").assertDoesNotExist()
+
+        // Start scrolling again -> button reappears
+        composeRule.onNodeWithTag("news_feed_list").performTouchInput {
+            down(Offset(width / 2f, height * 0.45f))
+            moveBy(Offset(0f, -height * 0.20f))
+        }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("feed_scroll_to_top_button").assertIsDisplayed()
+        composeRule.onNodeWithTag("news_feed_list").performTouchInput { up() }
+    }
+
+    @Test
+    fun `html extractor strips pre code script style and syntax highlighter blocks while keeping editorial prose`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val extractor = ArticleWebExtractor(context)
+        val html = """
+            <html><body><article>
+                <p>Google introduced adaptive predictive back transitions across foldable devices in this week's release.</p>
+                <pre><code>fun onCreate() { enableEdgeToEdge() }</code></pre>
+                <div class="wp-block-code"><p>val secretFlag = true;</p></div>
+                <div class="highlight"><p>const x = document.querySelector(".card");</p></div>
+                <div class="prism-code"><p>import android.os.Bundle;</p></div>
+                <div class="gist"><p>{"feature":"enabled"}</p></div>
+                <script>window.alert("tracking");</script>
+                <style>.card { color: red; }</style>
+                <p>According to engineers, “Smooth gestures make multitasking feel natural across large screens.”</p>
+            </article></body></html>
+        """.trimIndent()
+
+        val doc = Jsoup.parse(html, "https://news.example.com/story")
+        val extracted = extractor.extractReadableParagraphs(doc)
+        val rssExtracted = RssFeedParser.extractParagraphsFromHtml(html)
+
+        listOf(extracted, rssExtracted).forEach { paras ->
+            val joined = paras.joinToString("\n")
+            assertTrue("Expected first prose paragraph to be kept", joined.contains("adaptive predictive back transitions"))
+            assertTrue("Expected quoted prose paragraph to be kept", joined.contains("Smooth gestures make multitasking"))
+            assertFalse("Expected <pre><code> stripped", joined.contains("enableEdgeToEdge"))
+            assertFalse("Expected .wp-block-code stripped", joined.contains("secretFlag"))
+            assertFalse("Expected .highlight stripped", joined.contains("querySelector"))
+            assertFalse("Expected .prism-code stripped", joined.contains("android.os.Bundle"))
+            assertFalse("Expected .gist stripped", joined.contains("feature"))
+            assertFalse("Expected <script> stripped", joined.contains("tracking"))
+            assertFalse("Expected <style> stripped", joined.contains("color: red"))
+            assertFalse("Expected zero double newlines", joined.contains("\n\n"))
+        }
+    }
+
+    @Test
+    fun `text cleaner strips escaped xml teardown strings json payloads and code lines while keeping quoted punctuation`() {
+        val dirtyHtml = """
+            <p>An APK teardown spotted upcoming controls in the newest beta build.</p>
+            <p>&lt;string name="gemini_live_prompt"&gt;Start Live conversation&lt;/string&gt;<br/>
+            &lt;bool name="enable_adaptive_ui"&gt;true&lt;/bool&gt;</p>
+            <p>Introductory note before config.<br/>{"rolloutFlag": 100, "flags": ["a", "b"]}<br/>Analysts noted: "If rollouts succeed, users benefit immediately."</p>
+            <p>const val BUILD_TAG = "v14.0";<br/>if (flagEnabled && count > 0) {</p>
+            <p>Battery endurance improved 15% year-over-year (for prices under $599), and testers praised the display.</p>
+        """.trimIndent()
+
+        val paragraphs = RssFeedParser.extractParagraphsFromHtml(dirtyHtml)
+        val sanitized = ArticleTextCleaner.sanitizeParagraphs(paragraphs)
+        val joined = sanitized.joinToString("\n")
+
+        assertTrue(joined.contains("An APK teardown spotted upcoming controls"))
+        assertTrue(joined.contains("If rollouts succeed, users benefit immediately."))
+        assertTrue(joined.contains("Battery endurance improved 15% year-over-year (for prices under \$599)"))
+        assertFalse("Expected <string> XML teardown stripped", joined.contains("gemini_live_prompt"))
+        assertFalse("Expected <bool> XML teardown stripped", joined.contains("enable_adaptive_ui"))
+        assertFalse("Expected JSON payload stripped", joined.contains("rolloutFlag"))
+        assertFalse("Expected JSON payload stripped", joined.contains("\"flags\""))
+        assertFalse("Expected code line stripped", joined.contains("BUILD_TAG"))
+        assertFalse("Expected blank double newlines absent", joined.contains("\n\n"))
+    }
+
+    @Test
+    fun `article reader top bar buttons have visible separation and do not touch on compact width`() {
+        val article = MockNewsRepository.getArticles().first()
+
+        composeRule.setContent {
+            MaterialTheme {
+                Box(modifier = Modifier.size(360.dp, 640.dp)) {
+                    ArticleReaderPane(
+                        article = article,
+                        pageFlipDirection = 1,
+                        showBackButton = true,
+                        isBookmarked = false,
+                        isOfflineSaved = false,
+                        isNudgeDismissed = true,
+                        themeSettings = ThemeSettings(),
+                        audioState = AudioPlaybackState(),
+                        foldingFeature = null,
+                        savedScrollPositions = emptyMap(),
+                        onSaveScrollPosition = { _, _ -> },
+                        onBack = {},
+                        onPreviousArticle = {},
+                        onNextArticle = {},
+                        onToggleBookmark = {},
+                        onToggleOfflineSave = {},
+                        onPlayArticleAudio = {},
+                        onSeekAudio = {},
+                        onCycleAudioSpeed = {},
+                        onFontScaleChange = {},
+                        onDismissNudge = {},
+                        onRestoreNudge = {},
+                        onShowMessage = {},
+                        applyWindowInsets = false,
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        val backBounds = composeRule.onNodeWithTag("reader_back_button").getBoundsInRoot()
+        val trayBounds = composeRule.onNodeWithTag("reader_mode_tray").getBoundsInRoot()
+        val modeToggleBounds = composeRule.onNodeWithTag("reader_reading_mode_toggle").getBoundsInRoot()
+
+        val leftGap = trayBounds.left - backBounds.right
+        val rightGap = modeToggleBounds.left - trayBounds.right
+        assertTrue("Expected clear horizontal gap between back button and mode tray >= 8.dp, was $leftGap", leftGap >= 8.dp)
+        assertTrue("Expected clear horizontal gap between mode tray and book button >= 8.dp, was $rightGap", rightGap >= 8.dp)
     }
 }

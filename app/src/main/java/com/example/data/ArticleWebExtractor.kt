@@ -404,10 +404,11 @@ class ArticleWebExtractor(context: Context) {
         return false
     }
 
-    private fun extractReadableParagraphs(doc: Document): List<String> {
-        // Strip boilerplate containers before DOM scoring
+    internal fun extractReadableParagraphs(doc: Document): List<String> {
+        // Strip boilerplate & code containers before DOM scoring
+        ArticleTextCleaner.stripCodeContainers(doc)
         doc.select(
-            "script, style, noscript, nav, header, footer, aside, form, iframe, svg, button, " +
+            "noscript, nav, header, footer, aside, form, iframe, svg, button, " +
                 "[role=navigation], [role=banner], [role=complementary], " +
                 "[class*=cookie], [id*=cookie], [class*=consent], [id*=consent], " +
                 "[class*=advert], [class*=ad-slot], [id*=ad-], " +
@@ -475,15 +476,16 @@ class ArticleWebExtractor(context: Context) {
             if (el.tagName() == "p" && el.parents().any { it.tagName() in setOf("blockquote", "li") }) {
                 continue
             }
-            val rawText = el.text().replace(Regex("\\s+"), " ").trim()
-            if (rawText.length < 24) continue
-            val lower = rawText.lowercase(Locale.US)
-            if (skipPhrases.any { lower.contains(it) && rawText.length < 220 }) continue
+            val preservedText = ArticleTextCleaner.extractElementTextPreservingBreaks(el)
+            val cleanText = ArticleTextCleaner.cleanParagraphText(preservedText) ?: continue
+            if (cleanText.length < 24) continue
+            val lower = cleanText.lowercase(Locale.US)
+            if (skipPhrases.any { lower.contains(it) && cleanText.length < 220 }) continue
 
             val formatted = when (el.tagName().lowercase(Locale.US)) {
-                "li" -> "• $rawText"
-                "blockquote" -> "“$rawText”"
-                else -> rawText
+                "li" -> "• $cleanText"
+                "blockquote" -> "“$cleanText”"
+                else -> cleanText
             }
             if (seen.add(formatted)) {
                 paragraphs.add(formatted)
@@ -491,6 +493,7 @@ class ArticleWebExtractor(context: Context) {
         }
 
         return RssFeedParser.stripTrailingFeedEllipsis(paragraphs)
+            .filter { it.isNotBlank() }
     }
 
     private fun scoreContainer(el: Element, semanticBonus: Double): Double {
@@ -546,9 +549,10 @@ class ArticleWebExtractor(context: Context) {
             if (!file.exists()) return null
             val json = JSONObject(file.readText())
             val arr = json.optJSONArray("paragraphs") ?: JSONArray()
-            val paragraphs = (0 until arr.length()).mapNotNull { idx ->
+            val rawParagraphs = (0 until arr.length()).mapNotNull { idx ->
                 arr.optString(idx).takeIf { it.isNotBlank() }
             }
+            val paragraphs = ArticleTextCleaner.sanitizeParagraphs(rawParagraphs)
             WebExtractionResult(
                 paragraphs = paragraphs,
                 imageUrl = json.optString("imageUrl").takeIf { it.isNotBlank() },

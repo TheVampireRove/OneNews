@@ -134,13 +134,14 @@ object RssFeedParser {
         if (html.isBlank()) return emptyList()
         return try {
             val doc = Jsoup.parseBodyFragment(html)
-            doc.select("script, style, noscript, iframe, figure figcaption, aside").remove()
+            ArticleTextCleaner.stripCodeContainers(doc)
+            doc.select("figure figcaption, aside").remove()
 
             val result = mutableListOf<String>()
             val seen = HashSet<String>()
 
             fun addCleanParagraph(raw: String, prefix: String = "") {
-                val clean = raw.replace(Regex("\\s+"), " ").trim()
+                val clean = ArticleTextCleaner.cleanParagraphText(raw) ?: return
                 if (clean.length < 18) return
                 val lower = clean.lowercase()
                 if (truncationPhrases.any { lower.startsWith(it) || (lower.contains("appeared first on") && clean.length < 180) }) {
@@ -158,23 +159,25 @@ object RssFeedParser {
                     if (el.tagName() == "p" && el.parents().any { it.tagName() in setOf("blockquote", "li") }) {
                         continue
                     }
+                    val preserved = ArticleTextCleaner.extractElementTextPreservingBreaks(el)
                     when (el.tagName().lowercase()) {
-                        "li" -> addCleanParagraph(el.text(), "• ")
-                        "blockquote" -> addCleanParagraph(el.text(), "“")
+                        "li" -> addCleanParagraph(preserved, "• ")
+                        "blockquote" -> addCleanParagraph(preserved, "“")
                             .also {
                                 if (result.isNotEmpty() && result.last().startsWith("“") && !result.last().endsWith("”")) {
                                     val updated = result.removeAt(result.lastIndex) + "”"
                                     result.add(updated)
                                 }
                             }
-                        else -> addCleanParagraph(el.text())
+                        else -> addCleanParagraph(preserved)
                     }
                 }
             }
 
             if (result.isEmpty()) {
+                val cleanedHtml = doc.body().html()
                 val fallbackText = Jsoup.parse(
-                    html.replace(Regex("(?i)<br\\s*/?>"), "\n")
+                    cleanedHtml.replace(Regex("(?i)<br\\s*/?>"), "\n")
                         .replace(Regex("(?i)</(p|div|li|h[1-6]|blockquote)>"), "\n")
                 ).text()
                 fallbackText.split('\n')
@@ -654,9 +657,9 @@ object RssFeedParser {
             descriptionParagraphs.isNotEmpty() -> descriptionParagraphs
             else -> listOfNotNull(
                 Jsoup.parseBodyFragment(rawDescriptionHtml.ifBlank { rawContentHtml })
+                    .also { ArticleTextCleaner.stripCodeContainers(it) }
                     .text()
-                    .trim()
-                    .takeIf { it.isNotBlank() }
+                    .let { ArticleTextCleaner.cleanParagraphText(it) }
             )
         }
 
@@ -665,12 +668,12 @@ object RssFeedParser {
             stripTrailingFeedEllipsis(paragraphs)
         } else {
             paragraphs
-        }
+        }.filter { it.isNotBlank() }
 
         val rawSummaryText = Jsoup.parseBodyFragment(rawDescriptionHtml.ifBlank { rawContentHtml })
+            .also { ArticleTextCleaner.stripCodeContainers(it) }
             .text()
-            .replace(Regex("\\s+"), " ")
-            .trim()
+            .let { ArticleTextCleaner.cleanParagraphText(it).orEmpty() }
         val subtitle = buildCleanSubtitle(rawSummaryText, cleanedParagraphs)
 
         val totalWords = cleanedParagraphs.sumOf { it.split(Regex("\\s+")).size }
