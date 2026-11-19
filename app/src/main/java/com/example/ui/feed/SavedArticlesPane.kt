@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -83,6 +85,7 @@ fun SavedArticlesPane(
     onToggleBookmark: (String) -> Unit,
     onPlayArticleAudio: (NewsArticle) -> Unit,
     onScrollingChange: (Boolean) -> Unit = {},
+    useTwoColumnGrid: Boolean = false,
     applyStatusBarPadding: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
@@ -253,11 +256,16 @@ fun SavedArticlesPane(
                     hasItems = displayed.isNotEmpty(),
                     isExternalScrolling = isScrollbarDragging || isHeaderScrolling,
                 )
-                val scrubLabelForIndex: (Int) -> String? = remember(displayed) {
+                val displayedRows = remember(displayed, useTwoColumnGrid) {
+                    if (useTwoColumnGrid) displayed.chunked(2) else emptyList()
+                }
+                val scrubLabelForIndex: (Int) -> String? = remember(displayed, useTwoColumnGrid) {
                     { itemIdx ->
-                        val article = displayed.getOrNull(itemIdx)
+                        val articleIdx = (if (useTwoColumnGrid) itemIdx * 2 else itemIdx)
+                            .coerceIn(0, (displayed.size - 1).coerceAtLeast(0))
+                        val article = displayed.getOrNull(articleIdx)
                         if (article != null) {
-                            "${itemIdx + 1} / ${displayed.size} • ${article.displayCategoryLabel}"
+                            "${articleIdx + 1} / ${displayed.size} • ${article.displayCategoryLabel}"
                         } else {
                             null
                         }
@@ -273,26 +281,63 @@ fun SavedArticlesPane(
                             top = 8.dp,
                             bottom = bottomContentPadding + 24.dp,
                         ),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (useTwoColumnGrid) 12.dp else 14.dp),
                         modifier = Modifier
                             .fillMaxSize()
                             .testTag("saved_articles_list"),
                     ) {
-                        items(displayed, key = { it.id }) { article ->
-                            val isPlayingThis = !audioState.isNowBriefQueue &&
-                                audioState.activeArticleId == article.id &&
-                                audioState.isPlaying
-                            ArticleFeedCard(
-                                article = article,
-                                isSelected = highlightSelection && article.id == selectedArticleId,
-                                isBookmarked = article.id in bookmarkedIds,
-                                isOfflineSaved = article.id in offlineSavedIds,
-                                isAudioPlaying = isPlayingThis,
-                                useSerifHeadlines = themeSettings.useSerifHeadlines,
-                                onClick = { onArticleClick(article.id) },
-                                onToggleBookmark = { onToggleBookmark(article.id) },
-                                onPlayAudio = { onPlayArticleAudio(article) },
-                            )
+                        if (useTwoColumnGrid) {
+                            itemsIndexed(
+                                items = displayedRows,
+                                key = { _, row -> "saved_grid_${row.joinToString("_") { it.id }}" },
+                            ) { rowIdx, rowArticles ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("saved_grid_row_$rowIdx"),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.Top,
+                                ) {
+                                    rowArticles.forEach { article ->
+                                        val isPlayingThis = !audioState.isNowBriefQueue &&
+                                            audioState.activeArticleId == article.id &&
+                                            audioState.isPlaying
+                                        ArticleFeedCard(
+                                            article = article,
+                                            isSelected = highlightSelection && article.id == selectedArticleId,
+                                            isBookmarked = article.id in bookmarkedIds,
+                                            isOfflineSaved = article.id in offlineSavedIds,
+                                            isAudioPlaying = isPlayingThis,
+                                            useSerifHeadlines = themeSettings.useSerifHeadlines,
+                                            onClick = { onArticleClick(article.id) },
+                                            onToggleBookmark = { onToggleBookmark(article.id) },
+                                            onPlayAudio = { onPlayArticleAudio(article) },
+                                            compactGrid = true,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                    if (rowArticles.size == 1) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                        } else {
+                            items(displayed, key = { it.id }) { article ->
+                                val isPlayingThis = !audioState.isNowBriefQueue &&
+                                    audioState.activeArticleId == article.id &&
+                                    audioState.isPlaying
+                                ArticleFeedCard(
+                                    article = article,
+                                    isSelected = highlightSelection && article.id == selectedArticleId,
+                                    isBookmarked = article.id in bookmarkedIds,
+                                    isOfflineSaved = article.id in offlineSavedIds,
+                                    isAudioPlaying = isPlayingThis,
+                                    useSerifHeadlines = themeSettings.useSerifHeadlines,
+                                    onClick = { onArticleClick(article.id) },
+                                    onToggleBookmark = { onToggleBookmark(article.id) },
+                                    onPlayAudio = { onPlayArticleAudio(article) },
+                                )
+                            }
                         }
                     }
 

@@ -41,6 +41,7 @@ class ThemePreferencesRepository(private val context: Context) {
         val ENABLE_NOW_BRIEF = booleanPreferencesKey("enable_now_brief")
         val SHOW_NOW_NUDGE_CHIPS = booleanPreferencesKey("show_now_nudge_chips")
         val SMART_NUDGE_AUTO_HIDE = booleanPreferencesKey("smart_nudge_auto_hide")
+        val ENABLE_DUAL_PANE_LAYOUT = booleanPreferencesKey("enable_dual_pane_layout")
         val FULL_SCREEN_BOOK_READER = booleanPreferencesKey("full_screen_book_reader")
         val IS_PAGINATED_READING_MODE = booleanPreferencesKey("is_paginated_reading_mode")
         val PAGE_TURN_ANIMATION = stringPreferencesKey("page_turn_animation")
@@ -116,6 +117,7 @@ class ThemePreferencesRepository(private val context: Context) {
             prefs[Keys.ENABLE_NOW_BRIEF] = updated.enableNowBrief
             prefs[Keys.SHOW_NOW_NUDGE_CHIPS] = updated.showNowNudgeChips
             prefs[Keys.SMART_NUDGE_AUTO_HIDE] = updated.smartNowNudgeAutoHide
+            prefs[Keys.ENABLE_DUAL_PANE_LAYOUT] = updated.enableDualPaneLayout
             prefs[Keys.FULL_SCREEN_BOOK_READER] = updated.fullScreenBookReader
             prefs[Keys.IS_PAGINATED_READING_MODE] = updated.isPaginatedReadingMode
             prefs[Keys.PAGE_TURN_ANIMATION] = updated.pageTurnAnimation.name
@@ -249,6 +251,7 @@ class ThemePreferencesRepository(private val context: Context) {
             enableNowBrief = prefs[Keys.ENABLE_NOW_BRIEF] ?: true,
             showNowNudgeChips = prefs[Keys.SHOW_NOW_NUDGE_CHIPS] ?: true,
             smartNowNudgeAutoHide = prefs[Keys.SMART_NUDGE_AUTO_HIDE] ?: true,
+            enableDualPaneLayout = prefs[Keys.ENABLE_DUAL_PANE_LAYOUT] ?: true,
             fullScreenBookReader = prefs[Keys.FULL_SCREEN_BOOK_READER] ?: false,
             isPaginatedReadingMode = prefs[Keys.IS_PAGINATED_READING_MODE] ?: false,
             pageTurnAnimation = pageTurnAnim,

@@ -12,6 +12,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
+import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,6 +25,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.down
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -69,10 +72,12 @@ import com.example.ui.feed.NewsFeedPane
 import com.example.ui.reader.ArticleReaderPane
 import com.example.ui.reader.FullScreenBookReader
 import com.example.ui.reader.KindlePaginatedReader
+import com.example.ui.reader.ReaderPaneShimmerSkeleton
 import com.example.ui.reader.bookPageBackFaceColor
 import com.example.ui.reader.bookPageSurfaceColor
 import com.example.ui.reader.findCleanWordSplitOffset
 import com.example.ui.settings.AddFeedDialog
+import com.example.ui.settings.SettingsScreen
 import com.example.ui.settings.SourcesAndFeedsCard
 import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
@@ -1475,5 +1480,316 @@ class ExampleRobolectricTest {
         val rightGap = modeToggleBounds.left - trayBounds.right
         assertTrue("Expected clear horizontal gap between back button and mode tray >= 8.dp, was $leftGap", leftGap >= 8.dp)
         assertTrue("Expected clear horizontal gap between mode tray and book button >= 8.dp, was $rightGap", rightGap >= 8.dp)
+    }
+
+    @Test
+    fun `initial ui state and view model start with null selectedArticle without hardcoded defaults`() {
+        val defaultState = OneNewsUiState()
+        assertNull(defaultState.selectedArticleId)
+        assertNull(defaultState.selectedArticle)
+        assertFalse(defaultState.hasUserManuallySelectedArticle)
+        assertTrue(defaultState.isInitialFeedLoading)
+
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = NewsViewModel(app)
+        val initial = vm.uiState.value
+        assertNull(initial.selectedArticleId)
+        assertNull(initial.selectedArticle)
+        assertFalse(vm.hasUserManuallySelectedArticle)
+        assertTrue(initial.isInitialFeedLoading)
+    }
+
+    @Test
+    fun `selection resolver auto-selects newest sorted story and respects manual selection and removals`() {
+        val base = MockNewsRepository.getArticles()
+        val newest = base[0].copy(id = "live_newest", publishedAtEpochMillis = 2_000_000L)
+        val older = base[1].copy(id = "live_older", publishedAtEpochMillis = 1_500_000L)
+        val sortedFeed = listOf(newest, older)
+
+        // While initial feed fetch is in flight and user has not tapped anything, keep selection null (shimmer)
+        val loadingRes = NewsViewModel.resolveSelection(
+            activeFeedArticles = sortedFeed,
+            currentSelectedId = null,
+            hasUserManuallySelectedArticle = false,
+            isInitialFeedLoading = true,
+        )
+        assertNull(loadingRes.selectedArticleId)
+        assertFalse(loadingRes.hasUserManuallySelectedArticle)
+
+        // Once initial feed completes, auto-select the top sorted article (firstOrNull)
+        val loadedRes = NewsViewModel.resolveSelection(
+            activeFeedArticles = sortedFeed,
+            currentSelectedId = null,
+            hasUserManuallySelectedArticle = false,
+            isInitialFeedLoading = false,
+        )
+        assertEquals("live_newest", loadedRes.selectedArticleId)
+        assertFalse(loadedRes.hasUserManuallySelectedArticle)
+
+        // After refresh adds a newer breaking story at index 0, auto-selection advances when not manually overridden
+        val breaking = base[2].copy(id = "live_breaking", publishedAtEpochMillis = 2_500_000L)
+        val refreshedFeed = listOf(breaking, newest, older)
+        val refreshAutoRes = NewsViewModel.resolveSelection(
+            activeFeedArticles = refreshedFeed,
+            currentSelectedId = "live_newest",
+            hasUserManuallySelectedArticle = false,
+            isInitialFeedLoading = false,
+        )
+        assertEquals("live_breaking", refreshAutoRes.selectedArticleId)
+        assertFalse(refreshAutoRes.hasUserManuallySelectedArticle)
+
+        // When user manually tapped an article, refresh preserves it while still present
+        val manualKeptRes = NewsViewModel.resolveSelection(
+            activeFeedArticles = refreshedFeed,
+            currentSelectedId = "live_older",
+            hasUserManuallySelectedArticle = true,
+            isInitialFeedLoading = false,
+        )
+        assertEquals("live_older", manualKeptRes.selectedArticleId)
+        assertTrue(manualKeptRes.hasUserManuallySelectedArticle)
+
+        // If the manually selected article is no longer in the active list, fall back to top sorted story
+        val removedRes = NewsViewModel.resolveSelection(
+            activeFeedArticles = listOf(breaking, newest),
+            currentSelectedId = "live_older",
+            hasUserManuallySelectedArticle = true,
+            isInitialFeedLoading = false,
+        )
+        assertEquals("live_breaking", removedRes.selectedArticleId)
+        assertFalse(removedRes.hasUserManuallySelectedArticle)
+    }
+
+    @Test
+    fun `category switch resets manual selection flag and reader preserves scroll and page positions`() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = NewsViewModel(app)
+
+        vm.openArticle("custom_tapped_id", openCompactReader = true)
+        assertTrue(vm.hasUserManuallySelectedArticle)
+        assertEquals("custom_tapped_id", vm.uiState.value.selectedArticleId)
+
+        // Persist scroll offset & paginated reading page for App Continuity across fold/unfold
+        vm.updateReaderScrollPosition("custom_tapped_id", 420)
+        vm.updateReaderPagePosition("custom_tapped_id", 3)
+        assertEquals(420, vm.uiState.value.readerScrollPositions["custom_tapped_id"])
+        assertEquals(3, vm.uiState.value.readerPagePositions["custom_tapped_id"])
+
+        // Switching category tabs resets manual selection flag so newest category story previews automatically
+        vm.selectCategory(NewsCategory.SCIENCE)
+        assertFalse(vm.hasUserManuallySelectedArticle)
+        assertEquals(NewsCategory.SCIENCE, vm.uiState.value.selectedCategory)
+        // Saved continuity positions remain intact
+        assertEquals(420, vm.uiState.value.readerScrollPositions["custom_tapped_id"])
+        assertEquals(3, vm.uiState.value.readerPagePositions["custom_tapped_id"])
+    }
+
+    @Test
+    fun `reader pane shimmer skeleton renders cleanly and kindle reader restores saved page index`() {
+        val paragraphs = (1..8).map { idx ->
+            "Paragraph $idx demonstrates continuous reading across fold and unfold posture transitions without resetting the active page back to zero. Marker_$idx."
+        }
+        val longArticle = MockNewsRepository.getArticles().first().copy(
+            id = "continuity_page_article",
+            paragraphs = paragraphs,
+            isFullTextExtracted = true,
+        )
+
+        var showSkeleton by mutableStateOf(true)
+        var lastSavedPage = -1
+
+        composeRule.setContent {
+            MaterialTheme {
+                Box(modifier = Modifier.size(340.dp, 560.dp)) {
+                    if (showSkeleton) {
+                        ReaderPaneShimmerSkeleton()
+                    } else {
+                        KindlePaginatedReader(
+                            article = longArticle,
+                            themeSettings = ThemeSettings(
+                                isPaginatedReadingMode = true,
+                                pageTurnAnimation = PageTurnAnimation.INSTANT,
+                                showNowNudgeChips = false,
+                            ),
+                            toolbarsVisible = false,
+                            initialPageIndex = 2,
+                            onSavePagePosition = { _, page -> lastSavedPage = page },
+                            onToggleToolbars = {},
+                            onPreviousArticle = {},
+                            onNextArticle = {},
+                            onAddCalendarEvent = {},
+                            onOpenMaps = {},
+                        )
+                    }
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("reader_pane_shimmer_skeleton").assertIsDisplayed()
+
+        composeRule.runOnIdle { showSkeleton = false }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("kindle_page_indicator_pill").assertIsDisplayed()
+        assertEquals(2, lastSavedPage)
+    }
+
+    @Test
+    fun `disabling dual pane layout opens articles directly in full screen book reader`() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = NewsViewModel(app)
+
+        assertTrue("Dual-pane layout should be enabled by default", vm.uiState.value.themeSettings.enableDualPaneLayout)
+        assertFalse(vm.uiState.value.themeSettings.fullScreenBookReader)
+
+        // When dual-pane is enabled (and fullScreenBookReader is false), opening an article does not force book reader
+        vm.openArticle("article_dual_1", openCompactReader = true)
+        assertFalse(vm.uiState.value.isFullScreenBookOpen)
+        assertTrue(vm.uiState.value.isCompactReaderOpen)
+
+        // Disable dual-pane layout: opening an article must launch Full-Screen Book Reader
+        vm.setEnableDualPaneLayout(false)
+        assertFalse(vm.uiState.value.themeSettings.enableDualPaneLayout)
+        assertFalse(vm.uiState.value.isCompactReaderOpen)
+
+        vm.openArticle("article_grid_2", openCompactReader = true)
+        assertEquals("article_grid_2", vm.uiState.value.selectedArticleId)
+        assertTrue("Expected full-screen book reader to open when dual-pane is disabled", vm.uiState.value.isFullScreenBookOpen)
+        assertFalse("Compact reader should not open when book reader takes over", vm.uiState.value.isCompactReaderOpen)
+    }
+
+    @Test
+    fun `settings screen toggles dual pane layout switch and updates full screen book reader state`() {
+        var settings by mutableStateOf(ThemeSettings(enableDualPaneLayout = true, fullScreenBookReader = false))
+
+        composeRule.setContent {
+            MaterialTheme {
+                Box(modifier = Modifier.size(840.dp, 900.dp)) {
+                    SettingsScreen(
+                        themeSettings = settings,
+                        availableSources = emptyList(),
+                        enabledSourceIds = emptySet(),
+                        widthSizeClass = WindowWidthSizeClass.Expanded,
+                        foldingFeature = null,
+                        offlineCount = 0,
+                        bookmarkCount = 0,
+                        bottomContentPadding = 16.dp,
+                        onSetUseDynamicColor = {},
+                        onSetUseAmoledBlack = {},
+                        onSetThemeMode = {},
+                        onSetReaderFontScale = {},
+                        onSetDefaultAudioSpeed = {},
+                        onSetUseSerifHeadlines = {},
+                        onSetEnableNowBrief = {},
+                        onSetShowNowNudgeChips = {},
+                        onSetSmartNowNudgeAutoHide = {},
+                        onSetEnableDualPaneLayout = { enabled ->
+                            settings = settings.copy(enableDualPaneLayout = enabled)
+                        },
+                        onSetFullScreenBookReader = { enabled ->
+                            settings = settings.copy(fullScreenBookReader = enabled)
+                        },
+                        onToggleBriefTopic = {},
+                        onSetBriefSchedule = {},
+                        onToggleSourceEnabled = {},
+                        onAddManualSource = { _, _, _, _ -> },
+                        onRemoveCustomSource = {},
+                        onClearOfflineCache = {},
+                        applyStatusBarPadding = false,
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("switch_dual_pane_layout")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertIsOn()
+        composeRule.onNodeWithTag("switch_full_screen_book_reader")
+            .performScrollTo()
+            .assertIsOff()
+            .assertIsEnabled()
+
+        composeRule.onNodeWithTag("switch_dual_pane_layout")
+            .performScrollTo()
+            .performClick()
+        composeRule.waitForIdle()
+
+        assertFalse(settings.enableDualPaneLayout)
+        composeRule.onNodeWithTag("switch_dual_pane_layout").assertIsOff()
+        composeRule.onNodeWithTag("switch_full_screen_book_reader")
+            .performScrollTo()
+            .assertIsOn()
+            .assertIsNotEnabled()
+    }
+
+    @Test
+    fun `news feed pane renders two column article grid side by side when dual pane is disabled`() {
+        val sampleArticles = buildSampleFeedArticles(6)
+        var clickedArticleId: String? = null
+
+        composeRule.setContent {
+            MaterialTheme {
+                Box(modifier = Modifier.size(720.dp, 840.dp)) {
+                    NewsFeedPane(
+                        articles = sampleArticles,
+                        nowBriefArticles = emptyList(),
+                        selectedCategory = NewsCategory.ALL,
+                        searchQuery = "",
+                        isSearchExpanded = false,
+                        selectedArticleId = null,
+                        highlightSelection = false,
+                        bookmarkedIds = emptySet(),
+                        offlineSavedIds = emptySet(),
+                        themeSettings = ThemeSettings(
+                            enableNowBrief = false,
+                            enableDualPaneLayout = false,
+                        ),
+                        audioState = AudioPlaybackState(),
+                        initialScrollIndex = 0,
+                        initialScrollOffset = 0,
+                        bottomContentPadding = 16.dp,
+                        onSaveScrollPosition = { _, _ -> },
+                        onSelectCategory = {},
+                        onToggleSearch = {},
+                        onSearchQueryChange = {},
+                        onArticleClick = { clickedArticleId = it },
+                        onToggleBookmark = {},
+                        onPlayArticleAudio = {},
+                        onPlayBriefAudio = {},
+                        onToggleBriefPlayPause = {},
+                        onSaveAllBriefOffline = {},
+                        onToggleBriefTopic = {},
+                        useTwoColumnGrid = true,
+                        applyStatusBarPadding = false,
+                    )
+                }
+            }
+        }
+
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("news_feed_grid_row_0").assertIsDisplayed()
+
+        val firstCardBounds = composeRule.onNodeWithTag("article_card_${sampleArticles[0].id}")
+            .assertIsDisplayed()
+            .getBoundsInRoot()
+        val secondCardBounds = composeRule.onNodeWithTag("article_card_${sampleArticles[1].id}")
+            .assertIsDisplayed()
+            .getBoundsInRoot()
+
+        assertTrue(
+            "Expected second card (${secondCardBounds.left}) to be placed to the right of first card (${firstCardBounds.right})",
+            secondCardBounds.left > firstCardBounds.left && secondCardBounds.left >= firstCardBounds.right,
+        )
+        assertEquals(
+            "Expected paired grid cards in row 0 to align along their top edge",
+            firstCardBounds.top.value,
+            secondCardBounds.top.value,
+            2f,
+        )
+
+        composeRule.onNodeWithTag("article_card_${sampleArticles[1].id}").performClick()
+        composeRule.waitForIdle()
+        assertEquals(sampleArticles[1].id, clickedArticleId)
     }
 }

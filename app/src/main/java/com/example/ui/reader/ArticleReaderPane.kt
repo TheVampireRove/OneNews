@@ -149,6 +149,8 @@ fun ArticleReaderPane(
     foldingFeature: FoldingFeature?,
     savedScrollPositions: Map<String, Int>,
     onSaveScrollPosition: (String, Int) -> Unit,
+    savedPagePositions: Map<String, Int> = emptyMap(),
+    onSavePagePosition: (String, Int) -> Unit = { _, _ -> },
     onBack: () -> Unit,
     onPreviousArticle: () -> Unit,
     onNextArticle: () -> Unit,
@@ -205,6 +207,7 @@ fun ArticleReaderPane(
 
         AnimatedContent(
             targetState = article,
+            contentKey = { it.id },
             transitionSpec = {
                 val enterOffset: (Int) -> Int = { fullWidth ->
                     if (pageFlipDirection >= 0) (fullWidth * 0.28f).roundToInt() else -(fullWidth * 0.28f).roundToInt()
@@ -290,6 +293,8 @@ fun ArticleReaderPane(
                 StandardReaderLayout(
                     article = activeArticle,
                     scrollState = scrollState,
+                    initialPageIndex = savedPagePositions[activeArticle.id] ?: 0,
+                    onSavePagePosition = onSavePagePosition,
                     applyWindowInsets = applyWindowInsets,
                     showBackButton = showBackButton,
                     isBookmarked = isBookmarked,
@@ -342,6 +347,8 @@ fun ArticleReaderPane(
 private fun StandardReaderLayout(
     article: NewsArticle,
     scrollState: ScrollState,
+    initialPageIndex: Int,
+    onSavePagePosition: (String, Int) -> Unit,
     applyWindowInsets: Boolean,
     showBackButton: Boolean,
     isBookmarked: Boolean,
@@ -504,6 +511,8 @@ private fun StandardReaderLayout(
                                 themeSettings = themeSettings,
                                 toolbarsVisible = toolbarsVisible,
                                 isExtractingFullText = isExtractingFullText,
+                                initialPageIndex = initialPageIndex,
+                                onSavePagePosition = onSavePagePosition,
                                 onToggleToolbars = { toolbarsVisible = !toolbarsVisible },
                                 onPreviousArticle = onPreviousArticle,
                                 onNextArticle = onNextArticle,

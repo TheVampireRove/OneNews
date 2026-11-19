@@ -47,13 +47,16 @@ data class OneNewsUiState(
     val selectedCustomCategory: String? = null,
     val searchQuery: String = "",
     val isSearchExpanded: Boolean = false,
-    val selectedArticleId: String = "art_02",
+    val selectedArticleId: String? = null,
+    val hasUserManuallySelectedArticle: Boolean = false,
+    val isInitialFeedLoading: Boolean = true,
     val isCompactReaderOpen: Boolean = false,
     val isFullScreenBookOpen: Boolean = false,
     val pageFlipDirection: Int = 1,
     val feedFirstVisibleIndex: Int = 0,
     val feedFirstVisibleOffset: Int = 0,
     val readerScrollPositions: Map<String, Int> = emptyMap(),
+    val readerPagePositions: Map<String, Int> = emptyMap(),
     val bookmarkedIds: Set<String> = emptySet(),
     val offlineSavedIds: Set<String> = emptySet(),
     val dismissedNudgeIds: Set<String> = emptySet(),
@@ -64,11 +67,16 @@ data class OneNewsUiState(
     val snackbarMessage: String? = null,
 ) {
     val selectedArticle: NewsArticle?
-        get() = articles.find { it.id == selectedArticleId } ?: articles.firstOrNull()
+        get() = selectedArticleId?.let { id -> articles.find { it.id == id } }
 
     val savedArticles: List<NewsArticle>
         get() = articles.filter { it.id in bookmarkedIds || it.id in offlineSavedIds }
 }
+
+internal data class ArticleSelectionResolution(
+    val selectedArticleId: String?,
+    val hasUserManuallySelectedArticle: Boolean,
+)
 
 class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -85,7 +93,11 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
     private val fullTextOverrides = MutableStateFlow<Map<String, WebExtractionResult>>(emptyMap())
     private val extractingIdsFlow = MutableStateFlow<Set<String>>(emptySet())
     private val isRefreshingFlow = MutableStateFlow(false)
+    private val isInitialFeedLoadingFlow = MutableStateFlow(true)
     private val clockRefreshMillisFlow = MutableStateFlow(System.currentTimeMillis())
+
+    @Volatile
+    private var initialLiveSyncTriggered = false
 
     private val fetchedSourceIds = java.util.Collections.synchronizedSet(HashSet<String>())
     private val ogLookupInFlight = java.util.Collections.synchronizedSet(HashSet<String>())
@@ -95,18 +107,17 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _uiState = MutableStateFlow(
         OneNewsUiState(
-            articles = baseArticles,
-            filteredArticles = baseArticles,
-            nowBriefArticles = computeNowBriefArticles(
-                baseArticles,
-                setOf(NewsCategory.TECH, NewsCategory.WORLD, NewsCategory.SCIENCE),
-            ),
             availableSources = curatedSources,
             enabledSourceIds = defaultEnabledIds,
-            selectedArticleId = baseArticles.firstOrNull()?.id ?: "",
+            selectedArticleId = null,
+            hasUserManuallySelectedArticle = false,
+            isInitialFeedLoading = true,
         )
     )
     val uiState: StateFlow<OneNewsUiState> = _uiState.asStateFlow()
+
+    val hasUserManuallySelectedArticle: Boolean
+        get() = _uiState.value.hasUserManuallySelectedArticle
 
     init {
         viewModelScope.launch {
@@ -141,9 +152,10 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
             val refreshStateFlow = combine(
                 isRefreshingFlow,
+                isInitialFeedLoadingFlow,
                 clockRefreshMillisFlow,
-            ) { isRefreshing, clockNowMillis ->
-                isRefreshing to clockNowMillis
+            ) { isRefreshing, isInitialLoading, clockNowMillis ->
+                Triple(isRefreshing, isInitialLoading, clockNowMillis)
             }
 
             val networkFlow = combine(
@@ -152,8 +164,16 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
                 fullTextOverrides,
                 extractingIdsFlow,
                 refreshStateFlow,
-            ) { liveMap, ogMap, fullTextMap, extractingIds, (isRefreshing, clockNowMillis) ->
-                NetworkSnapshot(liveMap, ogMap, fullTextMap, extractingIds, isRefreshing, clockNowMillis)
+            ) { liveMap, ogMap, fullTextMap, extractingIds, (isRefreshing, isInitialLoading, clockNowMillis) ->
+                NetworkSnapshot(
+                    liveMap = liveMap,
+                    ogMap = ogMap,
+                    fullTextMap = fullTextMap,
+                    extractingIds = extractingIds,
+                    isRefreshing = isRefreshing,
+                    isInitialFeedLoading = isInitialLoading,
+                    clockNowMillis = clockNowMillis,
+                )
             }
 
             combine(settingsAndAudio, networkFlow) { (snap, audioEngine), net ->
@@ -179,8 +199,17 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
                         .distinctBy { it.lowercase() }
                         .sorted()
 
-                    syncEnabledLiveFeeds(allSources, snap.enabledSourceIds)
+                    val isInitialTrigger = !initialLiveSyncTriggered
+                    if (isInitialTrigger) {
+                        initialLiveSyncTriggered = true
+                    }
+                    syncEnabledLiveFeeds(
+                        allSources = allSources,
+                        enabledSourceIds = snap.enabledSourceIds,
+                        isInitialLoad = isInitialTrigger,
+                    )
 
+                    val effectiveInitialLoading = isInitialFeedLoadingFlow.value
                     val activeArticles = computeActiveArticles(
                         allSources = allSources,
                         enabledSourceIds = snap.enabledSourceIds,
@@ -190,31 +219,42 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
                         ogMap = net.ogMap,
                         fullTextMap = net.fullTextMap,
                         nowMillis = net.clockNowMillis,
+                        isInitialFeedLoading = effectiveInitialLoading,
                     )
 
                     _uiState.update { current ->
-                        val nextSelectedId = if (activeArticles.any { it.id == current.selectedArticleId }) {
-                            current.selectedArticleId
-                        } else {
-                            activeArticles.firstOrNull()?.id ?: ""
-                        }
                         val validCustomSelected = current.selectedCustomCategory?.takeIf { sel ->
                             allCustomCategories.any { it.equals(sel, ignoreCase = true) }
                         }
+                        val nextFiltered = filterArticles(
+                            articles = activeArticles,
+                            category = current.selectedCategory,
+                            query = current.searchQuery,
+                            selectedCustomCategory = validCustomSelected,
+                        )
+                        val activeListForSelection = when (current.activeDestination) {
+                            AppDestination.SAVED -> activeArticles.filter {
+                                it.id in snap.bookmarks || it.id in snap.offline
+                            }
+                            else -> nextFiltered
+                        }
+                        val resolvedSelection = resolveSelection(
+                            activeFeedArticles = activeListForSelection,
+                            currentSelectedId = current.selectedArticleId,
+                            hasUserManuallySelectedArticle = current.hasUserManuallySelectedArticle,
+                            isInitialFeedLoading = effectiveInitialLoading,
+                        )
                         current.copy(
                             articles = activeArticles,
-                            filteredArticles = filterArticles(
-                                articles = activeArticles,
-                                category = current.selectedCategory,
-                                query = current.searchQuery,
-                                selectedCustomCategory = validCustomSelected,
-                            ),
+                            filteredArticles = nextFiltered,
                             nowBriefArticles = computeNowBriefArticles(activeArticles, snap.settings.briefTopics),
                             availableSources = allSources,
                             enabledSourceIds = snap.enabledSourceIds,
                             customCategories = allCustomCategories,
                             selectedCustomCategory = validCustomSelected,
-                            selectedArticleId = nextSelectedId,
+                            selectedArticleId = resolvedSelection.selectedArticleId,
+                            hasUserManuallySelectedArticle = resolvedSelection.hasUserManuallySelectedArticle,
+                            isInitialFeedLoading = effectiveInitialLoading,
                             bookmarkedIds = snap.bookmarks,
                             offlineSavedIds = snap.offline,
                             extractingArticleIds = net.extractingIds,
@@ -242,6 +282,7 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
     private fun syncEnabledLiveFeeds(
         allSources: List<NewsSource>,
         enabledSourceIds: Set<String>,
+        isInitialLoad: Boolean = false,
     ) {
         val pendingSources = allSources.filter { source ->
             source.id in enabledSourceIds &&
@@ -249,7 +290,12 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
                 !source.feedUrl.contains(".example/") &&
                 fetchedSourceIds.add(source.id)
         }
-        if (pendingSources.isEmpty()) return
+        if (pendingSources.isEmpty()) {
+            if (isInitialLoad && isInitialFeedLoadingFlow.value) {
+                isInitialFeedLoadingFlow.value = false
+            }
+            return
+        }
 
         viewModelScope.launch(bgExceptionHandler) {
             try {
@@ -287,6 +333,10 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
+            } finally {
+                if (isInitialLoad || isInitialFeedLoadingFlow.value) {
+                    isInitialFeedLoadingFlow.value = false
+                }
             }
         }
     }
@@ -422,6 +472,7 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         ogMap: Map<String, String>,
         fullTextMap: Map<String, WebExtractionResult>,
         nowMillis: Long,
+        isInitialFeedLoading: Boolean = false,
     ): List<NewsArticle> {
         val enabledSources = allSources.filter { it.id in enabledSourceIds }
         val enabledByName = enabledSources.associateBy { it.name }
@@ -463,7 +514,9 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 }
-            } else if (source.name !in baseSourceNames) {
+            } else if (source.name !in baseSourceNames &&
+                (source.feedUrl.contains(".example/") || !isInitialFeedLoading)
+            ) {
                 listOf(MockNewsRepository.buildArticleForSource(source, nowMillis))
             } else {
                 emptyList()
@@ -507,9 +560,32 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectDestination(destination: AppDestination) {
-        _uiState.update {
-            it.copy(
+        _uiState.update { current ->
+            val targetList = when (destination) {
+                AppDestination.SAVED -> current.savedArticles
+                AppDestination.FEED -> current.filteredArticles
+                AppDestination.SETTINGS -> null
+            }
+            val resolved = if (targetList != null) {
+                val keepManual = current.hasUserManuallySelectedArticle &&
+                    current.selectedArticleId != null &&
+                    targetList.any { it.id == current.selectedArticleId }
+                resolveSelection(
+                    activeFeedArticles = targetList,
+                    currentSelectedId = if (keepManual) current.selectedArticleId else null,
+                    hasUserManuallySelectedArticle = keepManual,
+                    isInitialFeedLoading = current.isInitialFeedLoading,
+                )
+            } else {
+                ArticleSelectionResolution(
+                    selectedArticleId = current.selectedArticleId,
+                    hasUserManuallySelectedArticle = current.hasUserManuallySelectedArticle,
+                )
+            }
+            current.copy(
                 activeDestination = destination,
+                selectedArticleId = resolved.selectedArticleId,
+                hasUserManuallySelectedArticle = resolved.hasUserManuallySelectedArticle,
                 isCompactReaderOpen = false,
                 isFullScreenBookOpen = false,
             )
@@ -518,45 +594,76 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectCategory(category: NewsCategory) {
         _uiState.update { current ->
+            val nextFiltered = filterArticles(
+                articles = current.articles,
+                category = category,
+                query = current.searchQuery,
+                selectedCustomCategory = null,
+            )
+            // Reset manual selection flag when switching category tabs so the reader pane
+            // immediately previews the newest sorted story in the newly selected category.
+            val resolved = resolveSelection(
+                activeFeedArticles = nextFiltered,
+                currentSelectedId = null,
+                hasUserManuallySelectedArticle = false,
+                isInitialFeedLoading = current.isInitialFeedLoading,
+            )
             current.copy(
                 selectedCategory = category,
                 selectedCustomCategory = null,
-                filteredArticles = filterArticles(
-                    articles = current.articles,
-                    category = category,
-                    query = current.searchQuery,
-                    selectedCustomCategory = null,
-                ),
+                filteredArticles = nextFiltered,
+                selectedArticleId = resolved.selectedArticleId,
+                hasUserManuallySelectedArticle = resolved.hasUserManuallySelectedArticle,
             )
         }
+        _uiState.value.selectedArticle?.let { ensureFullTextExtracted(it) }
     }
 
     fun selectCustomCategory(customCategory: String?) {
         val clean = customCategory?.trim()?.takeIf { it.isNotEmpty() }
         _uiState.update { current ->
+            val nextFiltered = filterArticles(
+                articles = current.articles,
+                category = NewsCategory.ALL,
+                query = current.searchQuery,
+                selectedCustomCategory = clean,
+            )
+            val resolved = resolveSelection(
+                activeFeedArticles = nextFiltered,
+                currentSelectedId = null,
+                hasUserManuallySelectedArticle = false,
+                isInitialFeedLoading = current.isInitialFeedLoading,
+            )
             current.copy(
                 selectedCategory = NewsCategory.ALL,
                 selectedCustomCategory = clean,
-                filteredArticles = filterArticles(
-                    articles = current.articles,
-                    category = NewsCategory.ALL,
-                    query = current.searchQuery,
-                    selectedCustomCategory = clean,
-                ),
+                filteredArticles = nextFiltered,
+                selectedArticleId = resolved.selectedArticleId,
+                hasUserManuallySelectedArticle = resolved.hasUserManuallySelectedArticle,
             )
         }
+        _uiState.value.selectedArticle?.let { ensureFullTextExtracted(it) }
     }
 
     fun updateSearchQuery(query: String) {
         _uiState.update { current ->
+            val nextFiltered = filterArticles(
+                articles = current.articles,
+                category = current.selectedCategory,
+                query = query,
+                selectedCustomCategory = current.selectedCustomCategory,
+            )
+            val resolved = resolveSelection(
+                activeFeedArticles = nextFiltered,
+                currentSelectedId = current.selectedArticleId,
+                hasUserManuallySelectedArticle = current.hasUserManuallySelectedArticle,
+                isInitialFeedLoading = current.isInitialFeedLoading,
+            )
             current.copy(
                 searchQuery = query,
-                filteredArticles = filterArticles(
-                    articles = current.articles,
-                    category = current.selectedCategory,
-                    query = query,
-                    selectedCustomCategory = current.selectedCustomCategory,
-                ),
+                filteredArticles = nextFiltered,
+                selectedArticleId = resolved.selectedArticleId,
+                hasUserManuallySelectedArticle = resolved.hasUserManuallySelectedArticle,
             )
         }
     }
@@ -565,15 +672,24 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { current ->
             val next = expanded ?: !current.isSearchExpanded
             val nextQuery = if (!next) "" else current.searchQuery
+            val nextFiltered = filterArticles(
+                articles = current.articles,
+                category = current.selectedCategory,
+                query = nextQuery,
+                selectedCustomCategory = current.selectedCustomCategory,
+            )
+            val resolved = resolveSelection(
+                activeFeedArticles = nextFiltered,
+                currentSelectedId = current.selectedArticleId,
+                hasUserManuallySelectedArticle = current.hasUserManuallySelectedArticle,
+                isInitialFeedLoading = current.isInitialFeedLoading,
+            )
             current.copy(
                 isSearchExpanded = next,
                 searchQuery = nextQuery,
-                filteredArticles = filterArticles(
-                    articles = current.articles,
-                    category = current.selectedCategory,
-                    query = nextQuery,
-                    selectedCustomCategory = current.selectedCustomCategory,
-                ),
+                filteredArticles = nextFiltered,
+                selectedArticleId = resolved.selectedArticleId,
+                hasUserManuallySelectedArticle = resolved.hasUserManuallySelectedArticle,
             )
         }
     }
@@ -582,10 +698,12 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update { current ->
             val oldIndex = current.articles.indexOfFirst { it.id == current.selectedArticleId }
             val newIndex = current.articles.indexOfFirst { it.id == articleId }
-            val dir = if (newIndex >= oldIndex) 1 else -1
-            val openBook = current.themeSettings.fullScreenBookReader
+            val dir = if (oldIndex < 0 || newIndex >= oldIndex) 1 else -1
+            val openBook = current.themeSettings.fullScreenBookReader ||
+                !current.themeSettings.enableDualPaneLayout
             current.copy(
                 selectedArticleId = articleId,
+                hasUserManuallySelectedArticle = true,
                 isCompactReaderOpen = openCompactReader && !openBook,
                 isFullScreenBookOpen = openBook,
                 pageFlipDirection = dir,
@@ -616,6 +734,7 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 selectedArticleId = currentList[nextIdx].id,
+                hasUserManuallySelectedArticle = true,
                 pageFlipDirection = 1,
             )
         }
@@ -631,6 +750,7 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.update {
             it.copy(
                 selectedArticleId = currentList[prevIdx].id,
+                hasUserManuallySelectedArticle = true,
                 pageFlipDirection = -1,
             )
         }
@@ -657,6 +777,19 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 current.copy(
                     readerScrollPositions = current.readerScrollPositions + (articleId to scrollValue)
+                )
+            }
+        }
+    }
+
+    fun updateReaderPagePosition(articleId: String, pageIndex: Int) {
+        val safePage = pageIndex.coerceAtLeast(0)
+        _uiState.update { current ->
+            if (current.readerPagePositions[articleId] == safePage) {
+                current
+            } else {
+                current.copy(
+                    readerPagePositions = current.readerPagePositions + (articleId to safePage)
                 )
             }
         }
@@ -865,17 +998,26 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
             val updatedArticles = ArticleFeedAggregator.mergeDeduplicateAndSort(
                 articles = listOf(addedArticle) + current.articles,
             )
+            val updatedFiltered = filterArticles(
+                articles = updatedArticles,
+                category = current.selectedCategory,
+                query = current.searchQuery,
+                selectedCustomCategory = current.selectedCustomCategory,
+            )
+            val resolved = resolveSelection(
+                activeFeedArticles = updatedFiltered,
+                currentSelectedId = current.selectedArticleId,
+                hasUserManuallySelectedArticle = current.hasUserManuallySelectedArticle,
+                isInitialFeedLoading = current.isInitialFeedLoading,
+            )
             current.copy(
                 availableSources = updatedSources,
                 enabledSourceIds = updatedEnabled,
                 customCategories = updatedCustomCats,
                 articles = updatedArticles,
-                filteredArticles = filterArticles(
-                    articles = updatedArticles,
-                    category = current.selectedCategory,
-                    query = current.searchQuery,
-                    selectedCustomCategory = current.selectedCustomCategory,
-                ),
+                filteredArticles = updatedFiltered,
+                selectedArticleId = resolved.selectedArticleId,
+                hasUserManuallySelectedArticle = resolved.hasUserManuallySelectedArticle,
             )
         }
         viewModelScope.launch(bgExceptionHandler) { prefsRepo.addCustomSource(newSource) }
@@ -922,16 +1064,25 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
                     art
                 }
             }
+            val updatedFiltered = filterArticles(
+                articles = updatedArticles,
+                category = current.selectedCategory,
+                query = current.searchQuery,
+                selectedCustomCategory = current.selectedCustomCategory,
+            )
+            val resolved = resolveSelection(
+                activeFeedArticles = updatedFiltered,
+                currentSelectedId = current.selectedArticleId,
+                hasUserManuallySelectedArticle = current.hasUserManuallySelectedArticle,
+                isInitialFeedLoading = current.isInitialFeedLoading,
+            )
             current.copy(
                 availableSources = updatedSources,
                 customCategories = updatedCustomCats,
                 articles = updatedArticles,
-                filteredArticles = filterArticles(
-                    articles = updatedArticles,
-                    category = current.selectedCategory,
-                    query = current.searchQuery,
-                    selectedCustomCategory = current.selectedCustomCategory,
-                ),
+                filteredArticles = updatedFiltered,
+                selectedArticleId = resolved.selectedArticleId,
+                hasUserManuallySelectedArticle = resolved.hasUserManuallySelectedArticle,
             )
         }
         viewModelScope.launch(bgExceptionHandler) {
@@ -1002,6 +1153,16 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSmartNowNudgeAutoHide(enabled: Boolean) {
         viewModelScope.launch { prefsRepo.updateSettings { it.copy(smartNowNudgeAutoHide = enabled) } }
+    }
+
+    fun setEnableDualPaneLayout(enabled: Boolean) {
+        _uiState.update { current ->
+            current.copy(
+                themeSettings = current.themeSettings.copy(enableDualPaneLayout = enabled),
+                isCompactReaderOpen = if (!enabled) false else current.isCompactReaderOpen,
+            )
+        }
+        viewModelScope.launch { prefsRepo.updateSettings { it.copy(enableDualPaneLayout = enabled) } }
     }
 
     fun setFullScreenBookReader(enabled: Boolean) {
@@ -1092,6 +1253,35 @@ class NewsViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         audioController.shutdown()
     }
+
+    companion object {
+        internal fun resolveSelection(
+            activeFeedArticles: List<NewsArticle>,
+            currentSelectedId: String?,
+            hasUserManuallySelectedArticle: Boolean,
+            isInitialFeedLoading: Boolean,
+        ): ArticleSelectionResolution {
+            if (isInitialFeedLoading && !hasUserManuallySelectedArticle) {
+                return ArticleSelectionResolution(
+                    selectedArticleId = null,
+                    hasUserManuallySelectedArticle = false,
+                )
+            }
+            if (hasUserManuallySelectedArticle &&
+                currentSelectedId != null &&
+                activeFeedArticles.any { it.id == currentSelectedId }
+            ) {
+                return ArticleSelectionResolution(
+                    selectedArticleId = currentSelectedId,
+                    hasUserManuallySelectedArticle = true,
+                )
+            }
+            return ArticleSelectionResolution(
+                selectedArticleId = activeFeedArticles.firstOrNull()?.id,
+                hasUserManuallySelectedArticle = false,
+            )
+        }
+    }
 }
 
 private data class BaseSettingsSnapshot(
@@ -1118,5 +1308,6 @@ private data class NetworkSnapshot(
     val fullTextMap: Map<String, WebExtractionResult>,
     val extractingIds: Set<String>,
     val isRefreshing: Boolean,
+    val isInitialFeedLoading: Boolean,
     val clockNowMillis: Long,
 )

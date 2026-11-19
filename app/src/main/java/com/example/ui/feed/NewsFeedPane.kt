@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -124,6 +125,7 @@ fun NewsFeedPane(
     isRefreshing: Boolean = false,
     onRefresh: () -> Unit = {},
     onScrollingChange: (Boolean) -> Unit = {},
+    useTwoColumnGrid: Boolean = false,
     applyStatusBarPadding: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
@@ -320,12 +322,17 @@ fun NewsFeedPane(
                         isExternalScrolling = isScrollbarDragging || isHeaderScrolling,
                     )
 
-                    val scrubLabelForIndex: (Int) -> String? = remember(articles, hasNowBriefItem) {
+                    val articleRows = remember(articles, useTwoColumnGrid) {
+                        if (useTwoColumnGrid) articles.chunked(2) else emptyList()
+                    }
+
+                    val scrubLabelForIndex: (Int) -> String? = remember(articles, hasNowBriefItem, useTwoColumnGrid) {
                         { itemIdx ->
                             if (hasNowBriefItem && itemIdx == 0) {
                                 "Editor's Brief"
                             } else {
-                                val articleIdx = (itemIdx - if (hasNowBriefItem) 1 else 0)
+                                val contentIdx = (itemIdx - if (hasNowBriefItem) 1 else 0).coerceAtLeast(0)
+                                val articleIdx = (if (useTwoColumnGrid) contentIdx * 2 else contentIdx)
                                     .coerceIn(0, (articles.size - 1).coerceAtLeast(0))
                                 val article = articles.getOrNull(articleIdx)
                                 if (article != null) {
@@ -346,7 +353,7 @@ fun NewsFeedPane(
                                 top = 8.dp,
                                 bottom = bottomContentPadding + 36.dp,
                             ),
-                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(if (useTwoColumnGrid) 12.dp else 14.dp),
                             modifier = Modifier
                                 .fillMaxSize()
                                 .testTag("news_feed_list"),
@@ -367,24 +374,61 @@ fun NewsFeedPane(
                                 }
                             }
 
-                            items(
-                                items = articles,
-                                key = { it.id },
-                            ) { article ->
-                                val isPlayingThis = !audioState.isNowBriefQueue &&
-                                    audioState.activeArticleId == article.id &&
-                                    audioState.isPlaying
-                                ArticleFeedCard(
-                                    article = article,
-                                    isSelected = highlightSelection && article.id == selectedArticleId,
-                                    isBookmarked = article.id in bookmarkedIds,
-                                    isOfflineSaved = article.id in offlineSavedIds,
-                                    isAudioPlaying = isPlayingThis,
-                                    useSerifHeadlines = themeSettings.useSerifHeadlines,
-                                    onClick = { onArticleClick(article.id) },
-                                    onToggleBookmark = { onToggleBookmark(article.id) },
-                                    onPlayAudio = { onPlayArticleAudio(article) },
-                                )
+                            if (useTwoColumnGrid) {
+                                itemsIndexed(
+                                    items = articleRows,
+                                    key = { _, row -> "grid_row_${row.joinToString("_") { it.id }}" },
+                                ) { rowIdx, rowArticles ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("news_feed_grid_row_$rowIdx"),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        verticalAlignment = Alignment.Top,
+                                    ) {
+                                        rowArticles.forEach { article ->
+                                            val isPlayingThis = !audioState.isNowBriefQueue &&
+                                                audioState.activeArticleId == article.id &&
+                                                audioState.isPlaying
+                                            ArticleFeedCard(
+                                                article = article,
+                                                isSelected = highlightSelection && article.id == selectedArticleId,
+                                                isBookmarked = article.id in bookmarkedIds,
+                                                isOfflineSaved = article.id in offlineSavedIds,
+                                                isAudioPlaying = isPlayingThis,
+                                                useSerifHeadlines = themeSettings.useSerifHeadlines,
+                                                onClick = { onArticleClick(article.id) },
+                                                onToggleBookmark = { onToggleBookmark(article.id) },
+                                                onPlayAudio = { onPlayArticleAudio(article) },
+                                                compactGrid = true,
+                                                modifier = Modifier.weight(1f),
+                                            )
+                                        }
+                                        if (rowArticles.size == 1) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                            } else {
+                                items(
+                                    items = articles,
+                                    key = { it.id },
+                                ) { article ->
+                                    val isPlayingThis = !audioState.isNowBriefQueue &&
+                                        audioState.activeArticleId == article.id &&
+                                        audioState.isPlaying
+                                    ArticleFeedCard(
+                                        article = article,
+                                        isSelected = highlightSelection && article.id == selectedArticleId,
+                                        isBookmarked = article.id in bookmarkedIds,
+                                        isOfflineSaved = article.id in offlineSavedIds,
+                                        isAudioPlaying = isPlayingThis,
+                                        useSerifHeadlines = themeSettings.useSerifHeadlines,
+                                        onClick = { onArticleClick(article.id) },
+                                        onToggleBookmark = { onToggleBookmark(article.id) },
+                                        onPlayAudio = { onPlayArticleAudio(article) },
+                                    )
+                                }
                             }
                         }
 

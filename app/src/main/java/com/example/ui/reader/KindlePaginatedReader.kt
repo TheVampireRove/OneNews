@@ -95,6 +95,8 @@ fun KindlePaginatedReader(
     themeSettings: ThemeSettings,
     toolbarsVisible: Boolean,
     isExtractingFullText: Boolean = false,
+    initialPageIndex: Int = 0,
+    onSavePagePosition: (String, Int) -> Unit = { _, _ -> },
     onToggleToolbars: () -> Unit,
     onPreviousArticle: () -> Unit,
     onNextArticle: () -> Unit,
@@ -174,7 +176,9 @@ fun KindlePaginatedReader(
             )
         }
 
-        var currentPage by remember(article.id) { mutableIntStateOf(0) }
+        var currentPage by remember(article.id) {
+            mutableIntStateOf(initialPageIndex.coerceAtLeast(0))
+        }
         currentPage = currentPage.coerceIn(0, (pages.size - 1).coerceAtLeast(0))
 
         var isTurning by remember(article.id) { mutableStateOf(false) }
@@ -183,9 +187,12 @@ fun KindlePaginatedReader(
         val turnProgress = remember(article.id) { Animatable(0f) }
 
         LaunchedEffect(article.id) {
-            currentPage = 0
             isTurning = false
             turnProgress.snapTo(0f)
+        }
+
+        LaunchedEffect(article.id, currentPage) {
+            onSavePagePosition(article.id, currentPage)
         }
 
         fun animateTurn(direction: Int, startProgress: Float = 0f) {

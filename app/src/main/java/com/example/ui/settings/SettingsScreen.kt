@@ -128,6 +128,7 @@ fun SettingsScreen(
     onSetEnableNowBrief: (Boolean) -> Unit,
     onSetShowNowNudgeChips: (Boolean) -> Unit,
     onSetSmartNowNudgeAutoHide: (Boolean) -> Unit,
+    onSetEnableDualPaneLayout: (Boolean) -> Unit = {},
     onSetFullScreenBookReader: (Boolean) -> Unit,
     onSetPaginatedReadingMode: (Boolean) -> Unit = {},
     onSetPageTurnAnimation: (PageTurnAnimation) -> Unit = {},
@@ -284,6 +285,7 @@ fun SettingsScreen(
                                 onSetUseSystemFont = onSetUseSystemFont,
                                 onSetShowNowNudgeChips = onSetShowNowNudgeChips,
                                 onSetSmartNowNudgeAutoHide = onSetSmartNowNudgeAutoHide,
+                                onSetEnableDualPaneLayout = onSetEnableDualPaneLayout,
                                 onSetFullScreenBookReader = onSetFullScreenBookReader,
                                 onSetPaginatedReadingMode = onSetPaginatedReadingMode,
                                 onSetPageTurnAnimation = onSetPageTurnAnimation,
@@ -297,6 +299,7 @@ fun SettingsScreen(
                             FoldableAndStorageCard(
                                 widthSizeClass = widthSizeClass,
                                 foldingFeature = foldingFeature,
+                                enableDualPaneLayout = themeSettings.enableDualPaneLayout,
                                 offlineCount = offlineCount,
                                 bookmarkCount = bookmarkCount,
                                 onClearOfflineCache = onClearOfflineCache,
@@ -341,6 +344,7 @@ fun SettingsScreen(
                             onSetUseSystemFont = onSetUseSystemFont,
                             onSetShowNowNudgeChips = onSetShowNowNudgeChips,
                             onSetSmartNowNudgeAutoHide = onSetSmartNowNudgeAutoHide,
+                            onSetEnableDualPaneLayout = onSetEnableDualPaneLayout,
                             onSetFullScreenBookReader = onSetFullScreenBookReader,
                             onSetPaginatedReadingMode = onSetPaginatedReadingMode,
                             onSetPageTurnAnimation = onSetPageTurnAnimation,
@@ -354,6 +358,7 @@ fun SettingsScreen(
                         FoldableAndStorageCard(
                             widthSizeClass = widthSizeClass,
                             foldingFeature = foldingFeature,
+                            enableDualPaneLayout = themeSettings.enableDualPaneLayout,
                             offlineCount = offlineCount,
                             bookmarkCount = bookmarkCount,
                             onClearOfflineCache = onClearOfflineCache,
@@ -1086,6 +1091,7 @@ private fun ReadingAndAudioCard(
     onSetUseSystemFont: (Boolean) -> Unit,
     onSetShowNowNudgeChips: (Boolean) -> Unit,
     onSetSmartNowNudgeAutoHide: (Boolean) -> Unit,
+    onSetEnableDualPaneLayout: (Boolean) -> Unit,
     onSetFullScreenBookReader: (Boolean) -> Unit,
     onSetPaginatedReadingMode: (Boolean) -> Unit,
     onSetPageTurnAnimation: (PageTurnAnimation) -> Unit,
@@ -1096,6 +1102,23 @@ private fun ReadingAndAudioCard(
         title = "Reading, Book Mode & Audio",
         icon = Icons.Rounded.FormatSize,
     ) {
+        SettingsSwitchRow(
+            title = "Dual-Pane Layout",
+            subtitle = if (themeSettings.enableDualPaneLayout) {
+                "Show article feed and reader side by side on wide screens"
+            } else {
+                "Off: 2-column article grid opens stories in Full-Screen Book Reader"
+            },
+            checked = themeSettings.enableDualPaneLayout,
+            onCheckedChange = {
+                haptics.toggle()
+                onSetEnableDualPaneLayout(it)
+            },
+            testTag = "switch_dual_pane_layout",
+        )
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
         SettingsSwitchRow(
             title = "Paginated Book Mode",
             subtitle = "Read articles as discrete pages inside the reader with tap/drag page turning",
@@ -1166,8 +1189,13 @@ private fun ReadingAndAudioCard(
 
         SettingsSwitchRow(
             title = "Full-Screen Book Reader",
-            subtitle = "Launch stories in full-screen two-column spread on foldables",
-            checked = themeSettings.fullScreenBookReader,
+            subtitle = if (themeSettings.enableDualPaneLayout) {
+                "Launch stories in full-screen two-column spread on foldables"
+            } else {
+                "Always active while Dual-Pane Layout is turned off"
+            },
+            checked = themeSettings.fullScreenBookReader || !themeSettings.enableDualPaneLayout,
+            enabled = themeSettings.enableDualPaneLayout,
             onCheckedChange = {
                 haptics.toggle()
                 onSetFullScreenBookReader(it)
@@ -1479,14 +1507,15 @@ private fun NowBriefPersonalizationCard(
 private fun FoldableAndStorageCard(
     widthSizeClass: WindowWidthSizeClass,
     foldingFeature: FoldingFeature?,
+    enableDualPaneLayout: Boolean,
     offlineCount: Int,
     bookmarkCount: Int,
     onClearOfflineCache: () -> Unit,
 ) {
     val widthLabel = when (widthSizeClass) {
         WindowWidthSizeClass.Compact -> "Compact (Cover Display)"
-        WindowWidthSizeClass.Medium -> "Medium (Two-Pane Adaptive)"
-        else -> "Expanded (Unfolded Main Display)"
+        WindowWidthSizeClass.Medium -> if (enableDualPaneLayout) "Medium (Two-Pane Adaptive)" else "Medium (2-Column Grid)"
+        else -> if (enableDualPaneLayout) "Expanded (Dual-Pane Display)" else "Expanded (2-Column Grid)"
     }
     val postureLabel = when {
         foldingFeature == null -> "Single Plane / Flat"

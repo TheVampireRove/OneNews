@@ -148,6 +148,8 @@ fun FullScreenBookReader(
     onPlayArticleAudio: (NewsArticle) -> Unit,
     onFontScaleChange: (Float) -> Unit,
     onShowMessage: (String) -> Unit,
+    initialPageIndex: Int = 0,
+    onSavePagePosition: (String, Int) -> Unit = { _, _ -> },
     isExtractingFullText: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -269,9 +271,12 @@ fun FullScreenBookReader(
         }
 
         val stepSize = if (isTwoColumnSpread && !isFlexTabletop) 2 else 1
-        var currentPageIndex by remember(article.id) { mutableIntStateOf(0) }
+        var currentPageIndex by remember(article.id) {
+            mutableIntStateOf(initialPageIndex.coerceAtLeast(0))
+        }
         val maxPageStart = ((pages.size - 1) / stepSize) * stepSize
-        currentPageIndex = currentPageIndex.coerceIn(0, maxPageStart.coerceAtLeast(0))
+        currentPageIndex = ((currentPageIndex / stepSize) * stepSize)
+            .coerceIn(0, maxPageStart.coerceAtLeast(0))
 
         // Interactive Kindle-style page-turning animation state (0f = flat resting, 1f = turn completed)
         var turnDirection by remember(article.id) { mutableIntStateOf(1) }
@@ -280,9 +285,12 @@ fun FullScreenBookReader(
         var isTurning by remember(article.id) { mutableStateOf(false) }
 
         LaunchedEffect(article.id) {
-            currentPageIndex = 0
             turnProgress.snapTo(0f)
             isTurning = false
+        }
+
+        LaunchedEffect(article.id, currentPageIndex) {
+            onSavePagePosition(article.id, currentPageIndex)
         }
 
         fun animateTurn(direction: Int, startProgress: Float = 0f) {

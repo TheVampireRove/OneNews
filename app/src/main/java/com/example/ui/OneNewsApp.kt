@@ -64,6 +64,8 @@ import com.example.ui.feed.NewsFeedPane
 import com.example.ui.feed.SavedArticlesPane
 import com.example.ui.reader.ArticleReaderPane
 import com.example.ui.reader.FullScreenBookReader
+import com.example.ui.reader.ReaderPaneEmptyState
+import com.example.ui.reader.ReaderPaneShimmerSkeleton
 import com.example.ui.settings.SettingsScreen
 import kotlinx.coroutines.delay
 
@@ -88,10 +90,12 @@ fun OneNewsApp(
         }
     }
 
-    val isExpandedTwoPane = windowSizeClass.widthSizeClass != WindowWidthSizeClass.Compact
+    val isWideScreen = windowSizeClass.widthSizeClass != WindowWidthSizeClass.Compact
+    val isDualPaneActive = isWideScreen && uiState.themeSettings.enableDualPaneLayout
+    val useTwoColumnGrid = !uiState.themeSettings.enableDualPaneLayout
     val isMiniPlayerVisible = uiState.audioState.spokenText.isNotBlank()
     val showFullScreenBook = uiState.isFullScreenBookOpen && uiState.selectedArticle != null
-    val isCompactReaderVisible = !isExpandedTwoPane && uiState.isCompactReaderOpen && uiState.selectedArticle != null
+    val isCompactReaderVisible = !isWideScreen && uiState.isCompactReaderOpen && uiState.selectedArticle != null
 
     // Collapse expanded search bar on predictive back when at root Feed (otherwise let system handle back-to-home)
     PredictiveBackHandler(
@@ -143,6 +147,8 @@ fun OneNewsApp(
                         foldingFeature = foldingFeature,
                         isBookmarked = activeArticle.id in uiState.bookmarkedIds,
                         isExtractingFullText = activeArticle.id in uiState.extractingArticleIds,
+                        initialPageIndex = uiState.readerPagePositions[activeArticle.id] ?: 0,
+                        onSavePagePosition = viewModel::updateReaderPagePosition,
                         themeSettings = uiState.themeSettings,
                         audioState = uiState.audioState,
                         onClose = viewModel::closeFullScreenBookReader,
@@ -154,8 +160,8 @@ fun OneNewsApp(
                         onShowMessage = viewModel::showSnackbar,
                     )
                 }
-            } else if (isExpandedTwoPane) {
-                // Unfolded Main Display: Floating Glass Navigation Rail + 50:50 Glass-Framed Master-Detail
+            } else if (isWideScreen) {
+                // Unfolded / Wide Display: Floating Glass Navigation Rail + Dual-Pane Master-Detail or Full-Width 2-Column Grid
                 Row(
                     modifier = Modifier
                         .fillMaxSize()
@@ -166,15 +172,22 @@ fun OneNewsApp(
                 ) {
                     OneNewsNavigationRail(
                         activeDestination = uiState.activeDestination,
-                        isBookModeEnabled = uiState.themeSettings.fullScreenBookReader,
+                        isBookModeEnabled = uiState.themeSettings.fullScreenBookReader || !uiState.themeSettings.enableDualPaneLayout,
                         isAmoledEnabled = uiState.themeSettings.useAmoledBlack,
                         onSelectDestination = viewModel::selectDestination,
                         onQuickToggleBookMode = {
-                            val next = !uiState.themeSettings.fullScreenBookReader
-                            viewModel.setFullScreenBookReader(next)
-                            val activeId = uiState.selectedArticle?.id
-                            if (next && activeId != null && uiState.activeDestination != AppDestination.SETTINGS) {
-                                viewModel.openArticle(activeId, openCompactReader = true)
+                            if (!uiState.themeSettings.enableDualPaneLayout) {
+                                val activeId = uiState.selectedArticle?.id ?: uiState.filteredArticles.firstOrNull()?.id
+                                if (activeId != null && uiState.activeDestination != AppDestination.SETTINGS) {
+                                    viewModel.openArticle(activeId, openCompactReader = true)
+                                }
+                            } else {
+                                val next = !uiState.themeSettings.fullScreenBookReader
+                                viewModel.setFullScreenBookReader(next)
+                                val activeId = uiState.selectedArticle?.id
+                                if (next && activeId != null && uiState.activeDestination != AppDestination.SETTINGS) {
+                                    viewModel.openArticle(activeId, openCompactReader = true)
+                                }
                             }
                         },
                         onQuickPlayBrief = viewModel::playNowBriefAudio,
@@ -237,6 +250,7 @@ fun OneNewsApp(
                                         onSetEnableNowBrief = viewModel::setEnableNowBrief,
                                         onSetShowNowNudgeChips = viewModel::setShowNowNudgeChips,
                                         onSetSmartNowNudgeAutoHide = viewModel::setSmartNowNudgeAutoHide,
+                                        onSetEnableDualPaneLayout = viewModel::setEnableDualPaneLayout,
                                         onSetFullScreenBookReader = viewModel::setFullScreenBookReader,
                                         onSetPaginatedReadingMode = viewModel::setPaginatedReadingMode,
                                         onSetPageTurnAnimation = viewModel::setPageTurnAnimation,
@@ -283,7 +297,7 @@ fun OneNewsApp(
                                                 searchQuery = uiState.searchQuery,
                                                 isSearchExpanded = uiState.isSearchExpanded,
                                                 selectedArticleId = uiState.selectedArticleId,
-                                                highlightSelection = true,
+                                                highlightSelection = isDualPaneActive,
                                                 bookmarkedIds = uiState.bookmarkedIds,
                                                 offlineSavedIds = uiState.offlineSavedIds,
                                                 themeSettings = uiState.themeSettings,
@@ -308,6 +322,7 @@ fun OneNewsApp(
                                                 onSelectLocalLocation = viewModel::setLocalNewsLocation,
                                                 isRefreshing = uiState.isRefreshingFeed,
                                                 onRefresh = viewModel::refreshFeed,
+                                                useTwoColumnGrid = useTwoColumnGrid,
                                                 applyStatusBarPadding = false,
                                             )
                                         } else {
@@ -316,7 +331,7 @@ fun OneNewsApp(
                                                 bookmarkedIds = uiState.bookmarkedIds,
                                                 offlineSavedIds = uiState.offlineSavedIds,
                                                 selectedArticleId = uiState.selectedArticleId,
-                                                highlightSelection = true,
+                                                highlightSelection = isDualPaneActive,
                                                 themeSettings = uiState.themeSettings,
                                                 audioState = uiState.audioState,
                                                 bottomContentPadding = bottomPad,
@@ -325,58 +340,79 @@ fun OneNewsApp(
                                                 },
                                                 onToggleBookmark = viewModel::toggleBookmark,
                                                 onPlayArticleAudio = viewModel::playArticleAudio,
+                                                useTwoColumnGrid = useTwoColumnGrid,
                                                 applyStatusBarPadding = false,
                                             )
                                         }
                                     }
 
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                    if (isDualPaneActive) {
+                                        Spacer(modifier = Modifier.width(10.dp))
 
-                                    Surface(
-                                        shape = paneShape,
-                                        color = glassFillColor(
-                                            alpha = 0.42f,
-                                            baseColor = MaterialTheme.colorScheme.surface,
-                                        ),
-                                        border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .clip(paneShape),
-                                    ) {
-                                        uiState.selectedArticle?.let { activeArticle ->
-                                            ArticleReaderPane(
-                                                article = activeArticle,
-                                                pageFlipDirection = uiState.pageFlipDirection,
-                                                showBackButton = false,
-                                                isBookmarked = activeArticle.id in uiState.bookmarkedIds,
-                                                isOfflineSaved = activeArticle.id in uiState.offlineSavedIds,
-                                                isNudgeDismissed = activeArticle.id in uiState.dismissedNudgeIds,
-                                                themeSettings = uiState.themeSettings,
-                                                audioState = uiState.audioState,
-                                                foldingFeature = foldingFeature,
-                                                savedScrollPositions = uiState.readerScrollPositions,
-                                                onSaveScrollPosition = viewModel::updateReaderScrollPosition,
-                                                onBack = viewModel::closeCompactReader,
-                                                onPreviousArticle = viewModel::navigatePreviousArticle,
-                                                onNextArticle = viewModel::navigateNextArticle,
-                                                onToggleBookmark = viewModel::toggleBookmark,
-                                                onToggleOfflineSave = viewModel::toggleOfflineSave,
-                                                onPlayArticleAudio = viewModel::playArticleAudio,
-                                                onSeekAudio = viewModel::seekAudio,
-                                                onCycleAudioSpeed = viewModel::cycleAudioSpeed,
-                                                onFontScaleChange = viewModel::setReaderFontScale,
-                                                onTogglePaginatedMode = viewModel::setPaginatedReadingMode,
-                                                onOpenBookMode = {
-                                                    viewModel.setFullScreenBookReader(true)
-                                                    viewModel.openArticle(activeArticle.id, openCompactReader = true)
-                                                },
-                                                onDismissNudge = viewModel::dismissNowNudge,
-                                                onRestoreNudge = viewModel::restoreNowNudge,
-                                                onShowMessage = viewModel::showSnackbar,
-                                                isExtractingFullText = activeArticle.id in uiState.extractingArticleIds,
-                                                applyWindowInsets = false,
-                                            )
+                                        Surface(
+                                            shape = paneShape,
+                                            color = glassFillColor(
+                                                alpha = 0.42f,
+                                                baseColor = MaterialTheme.colorScheme.surface,
+                                            ),
+                                            border = BorderStroke(1.dp, glassBorderBrush(highlighted = false)),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxHeight()
+                                                .clip(paneShape),
+                                        ) {
+                                            val activeArticle = uiState.selectedArticle
+                                            if (activeArticle != null) {
+                                                ArticleReaderPane(
+                                                    article = activeArticle,
+                                                    pageFlipDirection = uiState.pageFlipDirection,
+                                                    showBackButton = false,
+                                                    isBookmarked = activeArticle.id in uiState.bookmarkedIds,
+                                                    isOfflineSaved = activeArticle.id in uiState.offlineSavedIds,
+                                                    isNudgeDismissed = activeArticle.id in uiState.dismissedNudgeIds,
+                                                    themeSettings = uiState.themeSettings,
+                                                    audioState = uiState.audioState,
+                                                    foldingFeature = foldingFeature,
+                                                    savedScrollPositions = uiState.readerScrollPositions,
+                                                    onSaveScrollPosition = viewModel::updateReaderScrollPosition,
+                                                    savedPagePositions = uiState.readerPagePositions,
+                                                    onSavePagePosition = viewModel::updateReaderPagePosition,
+                                                    onBack = viewModel::closeCompactReader,
+                                                    onPreviousArticle = viewModel::navigatePreviousArticle,
+                                                    onNextArticle = viewModel::navigateNextArticle,
+                                                    onToggleBookmark = viewModel::toggleBookmark,
+                                                    onToggleOfflineSave = viewModel::toggleOfflineSave,
+                                                    onPlayArticleAudio = viewModel::playArticleAudio,
+                                                    onSeekAudio = viewModel::seekAudio,
+                                                    onCycleAudioSpeed = viewModel::cycleAudioSpeed,
+                                                    onFontScaleChange = viewModel::setReaderFontScale,
+                                                    onTogglePaginatedMode = viewModel::setPaginatedReadingMode,
+                                                    onOpenBookMode = {
+                                                        viewModel.setFullScreenBookReader(true)
+                                                        viewModel.openArticle(activeArticle.id, openCompactReader = true)
+                                                    },
+                                                    onDismissNudge = viewModel::dismissNowNudge,
+                                                    onRestoreNudge = viewModel::restoreNowNudge,
+                                                    onShowMessage = viewModel::showSnackbar,
+                                                    isExtractingFullText = activeArticle.id in uiState.extractingArticleIds,
+                                                    applyWindowInsets = false,
+                                                )
+                                            } else if (uiState.isInitialFeedLoading || uiState.isRefreshingFeed) {
+                                                ReaderPaneShimmerSkeleton()
+                                            } else {
+                                                ReaderPaneEmptyState(
+                                                    title = if (destination == AppDestination.SAVED) {
+                                                        "No saved stories yet"
+                                                    } else {
+                                                        "No stories in this view"
+                                                    },
+                                                    subtitle = if (destination == AppDestination.SAVED) {
+                                                        "Bookmark or save any article offline to read it here."
+                                                    } else {
+                                                        "Switch categories, adjust your search, or pull to refresh."
+                                                    },
+                                                )
+                                            }
                                         }
                                     }
                                 }
@@ -439,6 +475,8 @@ fun OneNewsApp(
                                 foldingFeature = foldingFeature,
                                 savedScrollPositions = uiState.readerScrollPositions,
                                 onSaveScrollPosition = viewModel::updateReaderScrollPosition,
+                                savedPagePositions = uiState.readerPagePositions,
+                                onSavePagePosition = viewModel::updateReaderPagePosition,
                                 onBack = viewModel::closeCompactReader,
                                 onPreviousArticle = viewModel::navigatePreviousArticle,
                                 onNextArticle = viewModel::navigateNextArticle,
@@ -528,6 +566,7 @@ fun OneNewsApp(
                                             isRefreshing = uiState.isRefreshingFeed,
                                             onRefresh = viewModel::refreshFeed,
                                             onScrollingChange = { isCompactScrolling = it },
+                                            useTwoColumnGrid = useTwoColumnGrid,
                                         )
                                     }
 
@@ -547,6 +586,7 @@ fun OneNewsApp(
                                             onToggleBookmark = viewModel::toggleBookmark,
                                             onPlayArticleAudio = viewModel::playArticleAudio,
                                             onScrollingChange = { isCompactScrolling = it },
+                                            useTwoColumnGrid = useTwoColumnGrid,
                                         )
                                     }
 
@@ -571,6 +611,7 @@ fun OneNewsApp(
                                             onSetEnableNowBrief = viewModel::setEnableNowBrief,
                                             onSetShowNowNudgeChips = viewModel::setShowNowNudgeChips,
                                             onSetSmartNowNudgeAutoHide = viewModel::setSmartNowNudgeAutoHide,
+                                            onSetEnableDualPaneLayout = viewModel::setEnableDualPaneLayout,
                                             onSetFullScreenBookReader = viewModel::setFullScreenBookReader,
                                             onSetPaginatedReadingMode = viewModel::setPaginatedReadingMode,
                                             onSetPageTurnAnimation = viewModel::setPageTurnAnimation,

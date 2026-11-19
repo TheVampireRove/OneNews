@@ -116,6 +116,7 @@ data class ThemeSettings(
     val enableNowBrief: Boolean = true,
     val showNowNudgeChips: Boolean = true,
     val smartNowNudgeAutoHide: Boolean = true,
+    val enableDualPaneLayout: Boolean = true,
     val fullScreenBookReader: Boolean = false,
     val isPaginatedReadingMode: Boolean = false,
     val pageTurnAnimation: PageTurnAnimation = PageTurnAnimation.KINDLE_CURL,
